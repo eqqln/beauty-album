@@ -20,6 +20,7 @@ struct BackupView: View {
             ScrollView {
                 VStack(spacing: 14) {
                     statsCard
+                    autoCard
                     backupCard
                     restoreCard
                     cloudCard
@@ -33,21 +34,9 @@ struct BackupView: View {
         .navigationBarTitleDisplayMode(.inline)
         .onAppear { refreshList() }
         .fileImporter(isPresented: $showImporter,
-                      allowedContentTypes: [.zip, .data],
+                      allowedContentTypes: [.item],
                       allowsMultipleSelection: false) { result in
-            switch result {
-            case .success(let urls):
-                guard let u = urls.first else { return }
-                let accessed = u.startAccessingSecurityScopedResource()
-                defer { if accessed { u.stopAccessingSecurityScopedResource() } }
-                let copy = FileManager.default.temporaryDirectory
-                    .appendingPathComponent("import-\(UUID().uuidString).zip")
-                try? FileManager.default.copyItem(at: u, to: copy)
-                pendingZip = copy
-                showRestoreChoice = true
-            case .failure(let e):
-                show("选择文件失败：\(e.localizedDescription)", error: true)
-            }
+            handlePicked(result)
         }
         .confirmationDialog("恢复方式", isPresented: $showRestoreChoice, titleVisibility: .visible) {
             Button("覆盖恢复（清空现有数据）", role: .destructive) {
@@ -109,6 +98,152 @@ struct BackupView: View {
 
     private var divider: some View {
         Rectangle().fill(Theme.line).frame(width: 0.8, height: 26)
+    }
+
+    // MARK: 自动备份
+
+    private var autoCard: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 8) {
+                SectionHeader(title: "自动备份")
+                Spacer()
+                Toggle("", isOn: $store.settings.autoBackupEnabled)
+                    .labelsHidden()
+                    .tint(Theme.rose)
+            }
+
+            if store.settings.autoBackupEnabled {
+                HStack {
+                    Text("每隔几天备份")
+                        .font(.system(size: 12))
+                        .foregroundColor(Theme.inkSoft)
+                    Spacer()
+                    Picker("", selection: $store.settings.autoBackupDays) {
+                        ForEach([2, 3, 5, 7, 10, 15, 30], id: \.self) { d in
+                            Text("\(d) 天").tag(d)
+                        }
+                    }
+                    .pickerStyle(.menu)
+                    .tint(Theme.roseDeep)
+                }
+
+                HStack {
+                    Text("每天几点执行")
+                        .font(.system(size: 12))
+                        .foregroundColor(Theme.inkSoft)
+                    Spacer()
+                    DatePicker("", selection: autoTimeBinding,
+                               displayedComponents: .hourAndMinute)
+                        .labelsHidden()
+                        .environment(\.locale, Locale(identifier: "zh_CN"))
+                }
+
+                HStack {
+                    Text("最多保留")
+                        .font(.system(size: 12))
+                        .foregroundColor(Theme.inkSoft)
+                    Spacer()
+                    Picker("", selection: $store.settings.autoBackupKeep) {
+                        ForEach([3, 5, 10, 20], id: \.self) { k in
+                            Text("\(k) 份").tag(k)
+                        }
+                    }
+                    .pickerStyle(.menu)
+                    .tint(Theme.roseDeep)
+                }
+
+                Divider().background(Theme.line)
+
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack(spacing: 5) {
+                        Image(systemName: "clock.arrow.circlepath")
+                            .font(.system(size: 10))
+                        Text("下次备份：\(nextAutoText)")
+                            .font(.system(size: 11))
+                    }
+                    .foregroundColor(Theme.inkSoft)
+
+                    if let last = store.settings.lastAutoBackupAt {
+                        Text("上次完成：\(Fmt.dateTime.string(from: last))")
+                            .font(.system(size: 11))
+                            .foregroundColor(Theme.muted)
+                    } else {
+                        Text("还没执行过，点下方按钮可以立刻备一次")
+                            .font(.system(size: 11))
+                            .foregroundColor(Theme.muted)
+                    }
+
+                    if let note = store.autoBackupNote {
+                        Text(note)
+                            .font(.system(size: 11))
+                            .foregroundColor(Theme.roseDeep)
+                    }
+                }
+
+                Button {
+                    store.performAutoBackup()
+                } label: {
+                    HStack(spacing: 6) {
+                        if store.autoBackupRunning {
+                            ProgressView().scaleEffect(0.7)
+                        } else {
+                            Image(systemName: "bolt.fill")
+                        }
+                        Text(store.autoBackupRunning ? "备份中…" : "现在备份一次")
+                    }
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundColor(Theme.roseDeep)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 10)
+                    .background(Theme.roseLight)
+                    .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                }
+                .buttonStyle(.plain)
+                .disabled(store.autoBackupRunning || building || restoring)
+
+                Text("iOS 不允许 App 在后台自己定时跑，所以到点后需要打开一次 App 才会执行；开着 App 时到点也会自动跑。备份文件存在「文件 → 我的 iPhone → 美颜相册 → exports」。")
+                    .font(.system(size: 10))
+                    .foregroundColor(Theme.muted)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else {
+                Text("开启后，每隔几天自动把全部客户数据打包一份到本机，不用记着手动导。")
+                    .font(.system(size: 12))
+                    .foregroundColor(Theme.muted)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .padding(16)
+        .background(Theme.card)
+        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous)
+            .stroke(Theme.line, lineWidth: 0.8))
+    }
+
+    private var autoTimeBinding: Binding<Date> {
+        Binding(
+            get: {
+                var comps = DateComponents()
+                comps.hour = store.settings.autoBackupHour
+                comps.minute = store.settings.autoBackupMinute
+                return Calendar.current.date(from: comps) ?? Date()
+            },
+            set: { d in
+                let c = Calendar.current.dateComponents([.hour, .minute], from: d)
+                store.settings.autoBackupHour = c.hour ?? 21
+                store.settings.autoBackupMinute = c.minute ?? 0
+            }
+        )
+    }
+
+    private var nextAutoText: String {
+        let s = store.settings
+        let cal = Calendar.current
+        guard let base = s.lastAutoBackupAt ?? Date(),
+              let due = cal.date(byAdding: .day, value: max(1, s.autoBackupDays), to: base),
+              let slot = cal.date(bySettingHour: s.autoBackupHour,
+                                  minute: s.autoBackupMinute, second: 0, of: due)
+        else { return "—" }
+        return Fmt.dateTime.string(from: slot)
     }
 
     // MARK: 备份
@@ -181,7 +316,7 @@ struct BackupView: View {
         VStack(alignment: .leading, spacing: 12) {
             SectionHeader(title: "从备份恢复")
 
-            Text("选择之前导出的 ZIP 文件。换手机、重装 App 后用它把数据搬回来。")
+            Text("选择之前导出的 ZIP 文件。换手机、重装 App 后用它把数据搬回来。\n如果备份就在本机，直接点下方「本机备份」右侧的 ↻ 按钮，不用再选一次。")
                 .font(.system(size: 12))
                 .foregroundColor(Theme.muted)
                 .fixedSize(horizontal: false, vertical: true)
@@ -285,6 +420,18 @@ struct BackupView: View {
                                 .foregroundColor(Theme.muted)
                         }
                         Spacer()
+                        Button {
+                            pendingZip = item.url
+                            showRestoreChoice = true
+                        } label: {
+                            Image(systemName: "arrow.clockwise")
+                                .font(.system(size: 13, weight: .medium))
+                                .foregroundColor(.white)
+                                .frame(width: 30, height: 30)
+                                .background(Theme.rose)
+                                .clipShape(Circle())
+                        }
+                        .buttonStyle(.plain)
                         ShareLink(item: item.url) {
                             Image(systemName: "square.and.arrow.up")
                                 .font(.system(size: 13))
@@ -317,6 +464,39 @@ struct BackupView: View {
 
     private func refreshList() {
         existing = BackupService.existingBackups(in: store.exportsURL)
+    }
+
+    /// 从「文件」里选到备份包之后
+    private func handlePicked(_ result: Result<[URL], Error>) {
+        switch result {
+        case .success(let urls):
+            guard let u = urls.first else { return }
+            let accessed = u.startAccessingSecurityScopedResource()
+            defer { if accessed { u.stopAccessingSecurityScopedResource() } }
+
+            // 网盘 / 外置目录里的文件先拷到本地，避免恢复中途读不到
+            let copy = FileManager.default.temporaryDirectory
+                .appendingPathComponent("import-\(UUID().uuidString).zip")
+            try? FileManager.default.removeItem(at: copy)
+            do {
+                try FileManager.default.copyItem(at: u, to: copy)
+            } catch {
+                show("这个文件读不出来：\(error.localizedDescription)\n如果在网盘里，先下载到「文件」再选。", error: true)
+                return
+            }
+
+            guard BackupService.looksLikeZip(copy) else {
+                try? FileManager.default.removeItem(at: copy)
+                show("选中的不是备份 ZIP，请选导出时生成的那个 .zip 文件。", error: true)
+                return
+            }
+
+            pendingZip = copy
+            showRestoreChoice = true
+
+        case .failure(let e):
+            show("选择文件失败：\(e.localizedDescription)", error: true)
+        }
     }
 
     private func build() {

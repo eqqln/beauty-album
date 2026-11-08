@@ -415,9 +415,12 @@ struct SettingsView: View {
                     HStack {
                         Label("备份与恢复", systemImage: "externaldrive.badge.timemachine")
                         Spacer()
-                        Text("\(store.clients.count) 位客户")
+                        Text(store.settings.autoBackupEnabled
+                             ? "自动 · 每 \(store.settings.autoBackupDays) 天"
+                             : "\(store.clients.count) 位客户")
                             .font(.system(size: 12))
-                            .foregroundColor(Theme.muted)
+                            .foregroundColor(store.settings.autoBackupEnabled
+                                             ? Theme.roseDeep : Theme.muted)
                     }
                 }
             }

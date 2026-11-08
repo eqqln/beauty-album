@@ -165,6 +165,39 @@ final class Store: ObservableObject {
         mutate(&clients[i])
     }
 
+    // MARK: - 自动备份
+
+    /// 正在跑自动备份（防止重复触发）
+    @Published var autoBackupRunning = false
+    /// 最近一次自动备份的结果，给设置页显示
+    @Published var autoBackupNote: String?
+
+    /// App 回到前台时调用：到期了才真正打包
+    func runAutoBackupIfNeeded() {
+        guard !autoBackupRunning, settings.autoBackupDue() else { return }
+        performAutoBackup()
+    }
+
+    /// 立刻做一次自动备份（也用于「现在备份一次」按钮）
+    func performAutoBackup() {
+        guard !autoBackupRunning else { return }
+        autoBackupRunning = true
+        autoBackupNote = "正在备份…"
+        Task { @MainActor in
+            defer { autoBackupRunning = false }
+            do {
+                let r = try await BackupService.build(store: self)
+                _ = BackupService.markAsAuto(r.url)
+                settings.lastAutoBackupAt = Date()
+                BackupService.trimAutoBackups(in: exportsURL, keep: settings.autoBackupKeep)
+                save()
+                autoBackupNote = "备份完成 · \(Fmt.fileSize(r.bytes)) · \(Fmt.dateTime.string(from: Date()))"
+            } catch {
+                autoBackupNote = "备份失败：\(error.localizedDescription)"
+            }
+        }
+    }
+
     // MARK: - 图片
 
     /// 导入一张图片，返回写入的文件名

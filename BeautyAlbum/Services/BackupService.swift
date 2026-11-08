@@ -477,6 +477,61 @@ enum BackupService {
         return best
     }
 
+    // MARK: - 自动备份
+
+    /// 只看文件头是不是 ZIP（PK\x03\x04 / PK\x05\x06 / PK\x07\x08），
+    /// 防止用户在文件选择器里选到别的文件
+    static func looksLikeZip(_ url: URL) -> Bool {
+        guard let h = try? FileHandle(forReadingFrom: url) else { return false }
+        defer { try? h.close() }
+        let head = h.readData(ofLength: 4)
+        guard head.count == 4 else { return false }
+        let b = [UInt8](head)
+        return b[0] == 0x50 && b[1] == 0x4B
+            && (b[2] == 0x03 || b[2] == 0x05 || b[2] == 0x07)
+    }
+
+    /// 把刚生成的备份改名成「自动备份」，方便和手动备份区分
+    @discardableResult
+    static func markAsAuto(_ url: URL) -> URL {
+        let name = url.deletingPathExtension().lastPathComponent
+        guard !name.contains("自动备份") else { return url }
+        let newName = name.replacingOccurrences(of: "_备份_", with: "_自动备份_")
+        let dst = url.deletingLastPathComponent()
+            .appendingPathComponent(newName)
+            .appendingPathExtension("zip")
+        guard dst.path != url.path else { return url }
+        try? FileManager.default.removeItem(at: dst)
+        do {
+            try FileManager.default.moveItem(at: url, to: dst)
+            return dst
+        } catch {
+            return url
+        }
+    }
+
+    /// 只保留最近 keep 份自动备份，多的删掉
+    static func trimAutoBackups(in dir: URL, keep: Int) {
+        let fm = FileManager.default
+        guard keep > 0,
+              let files = try? fm.contentsOfDirectory(
+                at: dir, includingPropertiesForKeys: [.contentModificationDateKey])
+        else { return }
+
+        let autos = files
+            .filter { $0.pathExtension.lowercased() == "zip" && $0.lastPathComponent.contains("自动备份") }
+            .compactMap { u -> (URL, Date)? in
+                let d = (try? u.resourceValues(forKeys: [.contentModificationDateKey]))?
+                    .contentModificationDate
+                return (u, d ?? Date())
+            }
+            .sorted { $0.1 > $1.1 }
+
+        for (u, _) in autos.dropFirst(keep) {
+            try? fm.removeItem(at: u)
+        }
+    }
+
     // MARK: - 已有备份列表
 
     static func existingBackups(in dir: URL) -> [(url: URL, date: Date, size: Int64)] {

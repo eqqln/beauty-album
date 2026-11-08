@@ -557,6 +557,21 @@ struct AppSettings: Codable {
     /// 首页列表缩略图是否显示封面图（关闭后更省内存）
     var showClientCover: Bool = true
 
+    // MARK: 自动备份
+
+    /// 是否开启自动备份
+    var autoBackupEnabled: Bool = false
+    /// 每隔几天备份一次
+    var autoBackupDays: Int = 5
+    /// 备份时刻（0-23）
+    var autoBackupHour: Int = 21
+    /// 备份分钟（0 或 30）
+    var autoBackupMinute: Int = 0
+    /// 最多保留几份自动备份
+    var autoBackupKeep: Int = 5
+    /// 上次自动备份完成的时间
+    var lastAutoBackupAt: Date? = nil
+
     init() {}
 
     init(from decoder: Decoder) throws {
@@ -580,6 +595,42 @@ struct AppSettings: Codable {
         let lim = try c.decodeIfPresent(Int.self, forKey: .homeClientLimit) ?? 0
         homeClientLimit = max(0, lim)
         showClientCover = try c.decodeIfPresent(Bool.self, forKey: .showClientCover) ?? true
+
+        autoBackupEnabled = try c.decodeIfPresent(Bool.self, forKey: .autoBackupEnabled) ?? false
+        let days = try c.decodeIfPresent(Int.self, forKey: .autoBackupDays) ?? 5
+        autoBackupDays = min(90, max(1, days))
+        let hour = try c.decodeIfPresent(Int.self, forKey: .autoBackupHour) ?? 21
+        autoBackupHour = min(23, max(0, hour))
+        let minute = try c.decodeIfPresent(Int.self, forKey: .autoBackupMinute) ?? 0
+        autoBackupMinute = min(59, max(0, minute))
+        let keep = try c.decodeIfPresent(Int.self, forKey: .autoBackupKeep) ?? 5
+        autoBackupKeep = min(30, max(1, keep))
+        lastAutoBackupAt = try c.decodeIfPresent(Date.self, forKey: .lastAutoBackupAt)
+    }
+
+    /// 到点了吗：距上次备份满 N 天，且已经过了设定的钟点
+    func autoBackupDue(now: Date = Date()) -> Bool {
+        guard autoBackupEnabled else { return false }
+        let cal = Calendar.current
+        let days = max(1, autoBackupDays)
+
+        guard let last = lastAutoBackupAt else {
+            // 从没备份过：今天过了钟点就补一次
+            guard let slot = cal.date(bySettingHour: autoBackupHour,
+                                      minute: autoBackupMinute, second: 0, of: now)
+            else { return true }
+            return now >= slot
+        }
+
+        guard let dueDay = cal.date(byAdding: .day, value: days, to: last) else { return false }
+        let slot = cal.date(bySettingHour: autoBackupHour,
+                            minute: autoBackupMinute, second: 0, of: dueDay) ?? dueDay
+        return now >= slot
+    }
+
+    /// 「21:00」这种时刻文字
+    var autoBackupTimeText: String {
+        String(format: "%02d:%02d", autoBackupHour, autoBackupMinute)
     }
 
     func label(for phase: PhotoPhase) -> String {

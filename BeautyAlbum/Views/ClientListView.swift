@@ -15,6 +15,9 @@ struct RootView: View {
                 mainTabs
             }
         }
+        .onAppear {
+            store.runAutoBackupIfNeeded()
+        }
         .onChange(of: scenePhase) { phase in
             switch phase {
             case .background:
@@ -27,6 +30,8 @@ struct RootView: View {
                     }
                 }
                 backgroundedAt = nil
+                // 回到前台顺手检查一次自动备份是否到期
+                store.runAutoBackupIfNeeded()
             default:
                 break
             }
