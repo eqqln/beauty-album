@@ -52,7 +52,7 @@ def die(msg):
 
 
 def request(method, url, token, body=None, accept="application/vnd.github+json",
-            raw=False, timeout=60):
+            raw=False, timeout=60, retries=4):
     data = None
     headers = {
         "Authorization": "Bearer " + token,
@@ -64,23 +64,34 @@ def request(method, url, token, body=None, accept="application/vnd.github+json",
         data = json.dumps(body).encode("utf-8")
         headers["Content-Type"] = "application/json"
 
-    req = urllib.request.Request(url, data=data, headers=headers, method=method)
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            payload = resp.read()
-            if raw:
-                return resp.status, payload
-            return resp.status, (json.loads(payload) if payload else None)
-    except urllib.error.HTTPError as e:
-        text = e.read().decode("utf-8", "replace")
-        if raw:
-            return e.code, text.encode("utf-8")
+    last_err = None
+    for attempt in range(retries):
+        req = urllib.request.Request(url, data=data, headers=headers, method=method)
         try:
-            return e.code, json.loads(text)
-        except Exception:
-            return e.code, {"raw": text}
-    except urllib.error.URLError as e:
-        die("网络不可达：%s\n目标：%s" % (e.reason, url))
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                payload = resp.read()
+                if raw:
+                    return resp.status, payload
+                return resp.status, (json.loads(payload) if payload else None)
+        except urllib.error.HTTPError as e:
+            text = e.read().decode("utf-8", "replace")
+            if e.code >= 500 and attempt < retries - 1:
+                last_err = "HTTP %s" % e.code
+                time.sleep(2 + attempt * 2)
+                continue
+            if raw:
+                return e.code, text.encode("utf-8")
+            try:
+                return e.code, json.loads(text)
+            except Exception:
+                return e.code, {"raw": text}
+        except (urllib.error.URLError, OSError) as e:
+            # 代理偶发掐连接：SSL EOF / 连接重置，重试即可
+            last_err = str(getattr(e, "reason", e))
+            if attempt < retries - 1:
+                time.sleep(2 + attempt * 2)
+                continue
+            die("网络不可达（已重试 %d 次）：%s\n目标：%s" % (retries, last_err, url))
 
 
 def collect_files():
