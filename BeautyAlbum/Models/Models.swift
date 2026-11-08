@@ -188,18 +188,30 @@ struct Client: Codable, Identifiable, Hashable {
 
     var doneStepCount: Int { steps.filter(\.done).count }
 
-    var progress: Double {
+    /// 顺序推进时已完成的环节数：从第一步往后数，遇到第一个没打勾的就停
+    var sequentialDoneCount: Int { steps.prefix(while: { $0.done }).count }
+
+    /// 当前进行到第几步（从 1 起算，全部完成时等于总步数）
+    var currentStepNumber: Int {
         guard !steps.isEmpty else { return 0 }
-        return Double(doneStepCount) / Double(steps.count)
+        return min(steps.count, sequentialDoneCount + 1)
     }
 
-    /// 当前所处环节的标题（最后一个已完成的步骤）
+    /// 六个环节是不是全部走完了
+    var isAllStepsDone: Bool {
+        !steps.isEmpty && sequentialDoneCount == steps.count
+    }
+
+    var progress: Double {
+        guard !steps.isEmpty else { return 0 }
+        return Double(sequentialDoneCount) / Double(steps.count)
+    }
+
+    /// 当前所处环节，例如「第 2 步 · 第 1 次护理」
     var currentStageTitle: String {
         guard !steps.isEmpty else { return "未设置流程" }
-        let done = steps.filter(\.done)
-        if done.isEmpty { return "未开始 · \(steps[0].title)" }
-        if done.count == steps.count { return "已完成全部 \(steps.count) 个环节" }
-        return done.last?.title ?? steps[0].title
+        if isAllStepsDone { return "已完成全部 \(steps.count) 步" }
+        return "第 \(currentStepNumber) 步 · \(steps[currentStepNumber - 1].title)"
     }
 
     /// 已付金额

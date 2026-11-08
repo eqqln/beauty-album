@@ -10,6 +10,22 @@ struct StepsView: View {
     @State private var noteTarget: StepItem?
     @State private var noteText = ""
     @State private var showResetConfirm = false
+    /// 快进到第 N 步（index）
+    @State private var skipIndex: Int?
+    /// 撤销到第 N 步（index）
+    @State private var undoIndex: Int?
+
+    // MARK: 顺序推进的状态
+
+    /// 从头数，连续打勾的环节数
+    private var donePrefix: Int { client.steps.prefix(while: { $0.done }).count }
+    /// 当前该做的那一步的下标；全部做完为 nil
+    private var currentIndex: Int? {
+        donePrefix < client.steps.count ? donePrefix : nil
+    }
+    private var allDone: Bool {
+        !client.steps.isEmpty && donePrefix == client.steps.count
+    }
 
     var body: some View {
         VStack(spacing: 12) {
@@ -30,6 +46,7 @@ struct StepsView: View {
             addRow
             templateRow
         }
+        .onAppear(perform: normalize)
         .alert("修改环节名称", isPresented: Binding(
             get: { renameTarget != nil },
             set: { if !$0 { renameTarget = nil } }
@@ -74,37 +91,119 @@ struct StepsView: View {
         } message: {
             Text("会用设置中的模板（\(store.settings.stepTemplate.joined(separator: " → "))）替换当前流程，已完成记录会丢失。")
         }
+
+        .alert("跳到第 \((skipIndex ?? 0) + 1) 步？", isPresented: Binding(
+            get: { skipIndex != nil },
+            set: { if !$0 { skipIndex = nil } }
+        )) {
+            Button("取消", role: .cancel) { skipIndex = nil }
+            Button("跳过中间环节") { commitSkip() }
+        } message: {
+            Text(skipMessage)
+        }
+
+        .alert("撤销到第 \((undoIndex ?? 0) + 1) 步？", isPresented: Binding(
+            get: { undoIndex != nil },
+            set: { if !$0 { undoIndex = nil } }
+        )) {
+            Button("取消", role: .cancel) { undoIndex = nil }
+            Button("撤销", role: .destructive) { commitUndo() }
+        } message: {
+            Text(undoMessage)
+        }
+    }
+
+    private var skipMessage: String {
+        guard let i = skipIndex else { return "" }
+        let skipped = i - donePrefix
+        return "「\(client.steps[i].title)」会成为当前环节，中间 \(skipped) 个环节标记为已完成。"
+    }
+
+    private var undoMessage: String {
+        guard let i = undoIndex else { return "" }
+        let redo = donePrefix - i
+        return "「\(client.steps[i].title)」会变回未完成，后面 \(max(0, redo - 1)) 个已完成的环节也会一起撤销。"
     }
 
     // MARK: 进度卡
 
     private var progressCard: some View {
-        VStack(spacing: 10) {
-            HStack(alignment: .firstTextBaseline) {
-                VStack(alignment: .leading, spacing: 3) {
-                    Text("当前环节")
+        VStack(spacing: 12) {
+            HStack(alignment: .top) {
+                VStack(alignment: .leading, spacing: 5) {
+                    Text(allDone ? "全部完成" : "当前环节")
                         .font(.system(size: 11))
                         .foregroundColor(Theme.muted)
-                    Text(client.currentStageTitle)
-                        .font(.system(size: 16, weight: .semibold))
-                        .foregroundColor(Theme.ink)
+
+                    if allDone {
+                        Text("疗程已走完")
+                            .font(.system(size: 18, weight: .semibold))
+                            .foregroundColor(Theme.ink)
+                    } else {
+                        HStack(alignment: .firstTextBaseline, spacing: 6) {
+                            Text("第 \(client.currentStepNumber) 步")
+                                .font(.system(size: 20, weight: .bold))
+                                .foregroundColor(Theme.roseDeep)
+                            Text("共 \(client.steps.count) 步")
+                                .font(.system(size: 11))
+                                .foregroundColor(Theme.muted)
+                        }
+                        if !client.steps.isEmpty {
+                            Text(client.steps[min(client.currentStepNumber - 1,
+                                                  client.steps.count - 1)].title)
+                                .font(.system(size: 15, weight: .semibold))
+                                .foregroundColor(Theme.ink)
+                                .lineLimit(1)
+                        }
+                    }
                 }
-                Spacer()
-                Text("\(client.doneStepCount)/\(client.steps.count)")
-                    .font(.system(size: 22, weight: .bold))
-                    .foregroundColor(Theme.roseDeep)
+
+                Spacer(minLength: 8)
+
+                VStack(spacing: 1) {
+                    Text("\(donePrefix)/\(client.steps.count)")
+                        .font(.system(size: 20, weight: .bold))
+                        .foregroundColor(Theme.roseDeep)
+                    Text("已完成")
+                        .font(.system(size: 10))
+                        .foregroundColor(Theme.muted)
+                }
             }
+
             ProgressBar(value: client.progress, height: 8)
-            HStack {
-                Text("完成度 \(Int(client.progress * 100))%")
-                    .font(.system(size: 11))
-                    .foregroundColor(Theme.muted)
-                Spacer()
-                if let last = client.steps.last(where: { $0.done }), let d = last.doneAt {
-                    Text("最近更新 \(Fmt.dateOnly.string(from: d))")
-                        .font(.system(size: 11))
-                        .foregroundColor(Theme.muted)
+
+            if allDone {
+                HStack(spacing: 6) {
+                    Image(systemName: "checkmark.seal.fill")
+                        .font(.system(size: 13))
+                        .foregroundColor(Color(red: 0.36, green: 0.65, blue: 0.45))
+                    Text(finishedText)
+                        .font(.system(size: 12))
+                        .foregroundColor(Theme.inkSoft)
+                    Spacer()
+                    Button {
+                        resetProgress()
+                    } label: {
+                        Text("重新开始")
+                            .font(.system(size: 12))
+                            .foregroundColor(Theme.muted)
+                    }
+                    .buttonStyle(.plain)
                 }
+            } else if let i = currentIndex {
+                Button {
+                    completeCurrent()
+                } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: "checkmark.circle.fill")
+                            .font(.system(size: 15))
+                        Text("完成「\(client.steps[i].title)」，进入下一步")
+                            .font(.system(size: 14, weight: .semibold))
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.8)
+                    }
+                }
+                .buttonStyle(PrimaryButtonStyle())
             }
         }
         .padding(14)
@@ -114,36 +213,58 @@ struct StepsView: View {
             .stroke(Theme.line, lineWidth: 0.8))
     }
 
+    private var finishedText: String {
+        if let d = client.steps.compactMap({ $0.doneAt }).max() {
+            return "最后一步完成于 \(Fmt.dateOnly.string(from: d))"
+        }
+        return "所有环节都已完成"
+    }
+
     // MARK: 单行
 
     private func row(index: Int, step: StepItem) -> some View {
-        HStack(spacing: 11) {
+        let isDone = index < donePrefix
+        let isCurrent = index == donePrefix && index < client.steps.count
+
+        return HStack(spacing: 11) {
             Button {
-                toggle(step)
+                tapStep(index: index)
             } label: {
                 ZStack {
                     Circle()
-                        .stroke(step.done ? Color.clear : Theme.line, lineWidth: 1.5)
-                        .background(Circle().fill(step.done ? Theme.rose : Color.clear))
-                        .frame(width: 24, height: 24)
-                    if step.done {
+                        .stroke(isDone ? Color.clear : (isCurrent ? Theme.rose : Theme.line),
+                                lineWidth: isCurrent ? 2 : 1.5)
+                        .background(Circle().fill(isDone ? Theme.rose : Color.clear))
+                        .frame(width: 26, height: 26)
+                    if isDone {
                         Image(systemName: "checkmark")
-                            .font(.system(size: 11, weight: .bold))
+                            .font(.system(size: 12, weight: .bold))
                             .foregroundColor(.white)
                     } else {
                         Text("\(index + 1)")
-                            .font(.system(size: 11, weight: .medium))
-                            .foregroundColor(Theme.muted)
+                            .font(.system(size: 12, weight: isCurrent ? .bold : .medium))
+                            .foregroundColor(isCurrent ? Theme.roseDeep : Theme.muted)
                     }
                 }
             }
             .buttonStyle(.plain)
 
             VStack(alignment: .leading, spacing: 3) {
-                Text(step.title)
-                    .font(.system(size: 14, weight: step.done ? .medium : .regular))
-                    .foregroundColor(step.done ? Theme.ink : Theme.inkSoft)
-                    .strikethrough(false)
+                HStack(spacing: 6) {
+                    Text(step.title)
+                        .font(.system(size: 14, weight: isCurrent || isDone ? .medium : .regular))
+                        .foregroundColor(isDone ? Theme.inkSoft : (isCurrent ? Theme.ink : Theme.muted))
+                        .lineLimit(1)
+                    if isCurrent {
+                        Text("当前")
+                            .font(.system(size: 9, weight: .semibold))
+                            .foregroundColor(.white)
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(Theme.rose)
+                            .clipShape(Capsule())
+                    }
+                }
                 HStack(spacing: 6) {
                     if let d = step.doneAt {
                         Text(Fmt.dateTime.string(from: d))
@@ -155,6 +276,11 @@ struct StepsView: View {
                             .font(.system(size: 10))
                             .foregroundColor(Theme.muted)
                             .lineLimit(1)
+                    }
+                    if !isDone && !isCurrent {
+                        Text("点一下可快进")
+                            .font(.system(size: 10))
+                            .foregroundColor(Theme.muted.opacity(0.7))
                     }
                 }
             }
@@ -186,6 +312,7 @@ struct StepsView: View {
                 }
                 Button(role: .destructive) {
                     client.steps.removeAll { $0.id == step.id }
+                    normalize()
                     store.save()
                 } label: {
                     Label("删除", systemImage: "trash")
@@ -200,10 +327,12 @@ struct StepsView: View {
         }
         .padding(.horizontal, 13)
         .padding(.vertical, 11)
-        .background(Theme.card)
+        .background(isCurrent ? Theme.card : Theme.card.opacity(isDone ? 0.85 : 1))
         .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous)
-            .stroke(Theme.line, lineWidth: 0.8))
+        .overlay(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .stroke(isCurrent ? Theme.rose : Theme.line, lineWidth: isCurrent ? 1.2 : 0.8)
+        )
     }
 
     // MARK: 添加
@@ -249,13 +378,9 @@ struct StepsView: View {
                     .foregroundColor(Theme.roseDeep)
             }
             Spacer()
-            if client.doneStepCount > 0 {
+            if donePrefix > 0 {
                 Button {
-                    for i in client.steps.indices {
-                        client.steps[i].done = false
-                        client.steps[i].doneAt = nil
-                    }
-                    store.save()
+                    resetProgress()
                 } label: {
                     Text("清空进度")
                         .font(.system(size: 12))
@@ -268,10 +393,55 @@ struct StepsView: View {
 
     // MARK: 操作
 
-    private func toggle(_ step: StepItem) {
-        guard let i = client.steps.firstIndex(where: { $0.id == step.id }) else { return }
-        client.steps[i].done.toggle()
-        client.steps[i].doneAt = client.steps[i].done ? Date() : nil
+    /// 点圆圈：已完成→撤销；当前→完成；后面的→快进
+    private func tapStep(index: Int) {
+        if index < donePrefix {
+            if donePrefix - index > 1 {
+                undoIndex = index
+            } else {
+                undoIndex = index
+                commitUndo()
+            }
+        } else if index == donePrefix {
+            completeCurrent()
+        } else {
+            skipIndex = index
+        }
+    }
+
+    private func completeCurrent() {
+        guard let i = currentIndex else { return }
+        client.steps[i].done = true
+        client.steps[i].doneAt = Date()
+        store.save()
+    }
+
+    private func commitSkip() {
+        guard let target = skipIndex else { return }
+        let now = Date()
+        for i in donePrefix..<min(target, client.steps.count) {
+            client.steps[i].done = true
+            client.steps[i].doneAt = now
+        }
+        skipIndex = nil
+        store.save()
+    }
+
+    private func commitUndo() {
+        guard let target = undoIndex else { return }
+        for i in target..<client.steps.count {
+            client.steps[i].done = false
+            client.steps[i].doneAt = nil
+        }
+        undoIndex = nil
+        store.save()
+    }
+
+    private func resetProgress() {
+        for i in client.steps.indices {
+            client.steps[i].done = false
+            client.steps[i].doneAt = nil
+        }
         store.save()
     }
 
@@ -280,7 +450,23 @@ struct StepsView: View {
         guard target >= 0, target < client.steps.count else { return }
         let item = client.steps.remove(at: index)
         client.steps.insert(item, at: target)
+        normalize()
         store.save()
+    }
+
+    /// 保证「已完成」永远是开头连续的一段，否则第 N 步会算错
+    private func normalize() {
+        var seenUndone = false
+        var changed = false
+        for i in client.steps.indices {
+            if !client.steps[i].done { seenUndone = true }
+            if client.steps[i].done && seenUndone {
+                client.steps[i].done = false
+                client.steps[i].doneAt = nil
+                changed = true
+            }
+        }
+        if changed { store.save() }
     }
 
     private func commitRename() {

@@ -77,7 +77,30 @@ if [ "$ME_CODE" != "200" ]; then
 fi
 say "Token 有效，账号：$OWNER，目标仓库：$OWNER/$REPO（$VISIBILITY）"
 
-# ---------- 2. 本地 git 仓库 ----------
+# ---------- 2. 通道探测 ----------
+# git push 走的是 github.com，网页/主站被网络干扰时这条完全不通；
+# 而 api.github.com 通常还能用。探测一次，不通就直接切 API 直传。
+
+step "探测 github.com 是否可达"
+GH_CODE=$(curl -s -o /dev/null -m 8 -w '%{http_code}' https://github.com || true)
+if [ "$GH_CODE" != "200" ] && [ "$GH_CODE" != "301" ] && [ "$GH_CODE" != "302" ]; then
+  say "github.com 不可达（返回 ${GH_CODE:-超时}），切换为 API 直传模式"
+  PY=""
+  for c in python3 python py; do
+    # 光有命令不够，Windows 商店版 python 是空壳，要能真的跑起来
+    if command -v "$c" >/dev/null 2>&1 && "$c" -c "import sys" >/dev/null 2>&1; then
+      PY="$c"; break
+    fi
+  done
+  [ -n "$PY" ] || die "需要 Python 3 才能走 API 直传，请安装后重试"
+  EXTRA=""
+  [ "$VISIBILITY" = "public" ] && EXTRA="--public"
+  exec "$PY" "$(dirname "${BASH_SOURCE[0]}")/tools/push_api.py" \
+    --owner "$OWNER" --repo "$REPO" --token "$TOKEN" $EXTRA
+fi
+say "github.com 可达，使用 git 推送"
+
+# ---------- 3. 本地 git 仓库 ----------
 
 step "初始化本地仓库"
 if [ ! -d .git ]; then
@@ -100,7 +123,7 @@ else
   say "已提交 $(git rev-list --count HEAD) 个版本"
 fi
 
-# ---------- 3. 远端仓库 ----------
+# ---------- 4. 远端仓库 ----------
 
 step "检查远端仓库"
 REPO_CODE=$(curl -s -o /dev/null -w '%{http_code}' -H "$AUTH_HDR" "$API/repos/$OWNER/$REPO")
@@ -123,7 +146,7 @@ else
   die "查询仓库失败（HTTP $REPO_CODE）"
 fi
 
-# ---------- 4. 推送 ----------
+# ---------- 5. 推送 ----------
 
 step "推送到 GitHub"
 git remote remove origin 2>/dev/null || true
@@ -147,7 +170,7 @@ fi
 git remote set-url origin "https://github.com/${OWNER}/${REPO}.git"
 say "推送完成，已从 .git/config 移除 Token"
 
-# ---------- 5. 触发构建 ----------
+# ---------- 6. 触发构建 ----------
 
 step "触发云端编译"
 DISPATCH_CODE=$(curl -s -o /dev/null -w '%{http_code}' -X POST \
@@ -162,7 +185,7 @@ case "$DISPATCH_CODE" in
   *)   say "手动触发返回 HTTP $DISPATCH_CODE，push 已自动触发构建" ;;
 esac
 
-# ---------- 6. 盯进度（可选）----------
+# ---------- 7. 盯进度（可选）----------
 
 if [ "$WATCH" = "1" ]; then
   step "等待编译完成（每 15 秒查一次，最长 20 分钟）"
@@ -185,7 +208,7 @@ if [ "$WATCH" = "1" ]; then
   done
 fi
 
-# ---------- 7. 收尾 ----------
+# ---------- 8. 收尾 ----------
 
 cat <<EOF
 

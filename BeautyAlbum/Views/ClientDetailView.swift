@@ -183,7 +183,7 @@ struct ClientDetailView: View {
                         .foregroundColor(Theme.inkSoft)
                         .lineLimit(1)
                     Spacer()
-                    Text("\(c.doneStepCount)/\(c.steps.count)")
+                    Text("\(c.sequentialDoneCount)/\(c.steps.count)")
                         .font(.system(size: 12, weight: .semibold))
                         .foregroundColor(Theme.roseDeep)
                 }

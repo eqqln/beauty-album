@@ -207,7 +207,7 @@ enum BackupService {
         建档时间：\(Fmt.dateTime.string(from: c.createdAt))
         照片数量：\(c.photos.count)（\(settings.beforeLabel) \(c.beforePhotos.count) / \(settings.afterLabel) \(c.afterPhotos.count)）
         当前环节：\(c.currentStageTitle)
-        完成进度：\(c.doneStepCount)/\(c.steps.count)
+        完成进度：\(c.sequentialDoneCount)/\(c.steps.count)
 
         —— 账单 ——
         应收：\(c.quotedPrice > 0 ? Fmt.money(c.quotedPrice) : "未设置")
@@ -314,7 +314,7 @@ enum BackupService {
     }
 
     private static func stepsInfo(_ c: Client, settings: AppSettings) -> String {
-        var s = "当前环节：\(c.currentStageTitle)\n进度：\(c.doneStepCount)/\(c.steps.count)\n\n"
+        var s = "当前环节：\(c.currentStageTitle)\n进度：\(c.sequentialDoneCount)/\(c.steps.count)\n\n"
         for (i, st) in c.steps.enumerated() {
             let mark = st.done ? "[已完成]" : "[未完成]"
             let time = st.doneAt.map { "  \(Fmt.dateTime.string(from: $0))" } ?? ""
