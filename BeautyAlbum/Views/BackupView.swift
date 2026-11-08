@@ -238,8 +238,8 @@ struct BackupView: View {
     private var nextAutoText: String {
         let s = store.settings
         let cal = Calendar.current
-        guard let base = s.lastAutoBackupAt ?? Date(),
-              let due = cal.date(byAdding: .day, value: max(1, s.autoBackupDays), to: base),
+        let base = s.lastAutoBackupAt ?? Date()
+        guard let due = cal.date(byAdding: .day, value: max(1, s.autoBackupDays), to: base),
               let slot = cal.date(bySettingHour: s.autoBackupHour,
                                   minute: s.autoBackupMinute, second: 0, of: due)
         else { return "—" }
