@@ -64,6 +64,12 @@ struct RootView: View {
                     .tag(3)
                     .tabItem { Label("产品", systemImage: "shippingbox.fill") }
             }
+
+            if store.settings.features.agents {
+                AgentListView()
+                    .tag(4)
+                    .tabItem { Label("代理", systemImage: "person.3.fill") }
+            }
         }
         .tint(Theme.roseDeep)
     }
@@ -73,6 +79,7 @@ struct RootView: View {
         case 1: return store.settings.features.teachers
         case 2: return store.settings.features.appointments
         case 3: return store.settings.features.products
+        case 4: return store.settings.features.agents
         default: return true
         }
     }

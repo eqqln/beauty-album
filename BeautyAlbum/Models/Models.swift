@@ -484,6 +484,191 @@ struct ProductClaim: Codable, Identifiable, Hashable {
     }
 }
 
+// MARK: - 代理等级
+
+enum AgentLevel: String, Codable, CaseIterable, Identifiable {
+    case partner = "合伙人"
+    case general = "总代"
+    case first = "一级代理"
+    case second = "二级代理"
+    case retail = "零售"
+
+    var id: String { rawValue }
+
+    /// 默认拿货折扣，0.6 = 6 折
+    var defaultDiscount: Double {
+        switch self {
+        case .partner: return 0.45
+        case .general: return 0.50
+        case .first: return 0.60
+        case .second: return 0.70
+        case .retail: return 1.00
+        }
+    }
+
+    /// 等级高低，数字越小级别越高，用于上级校验
+    var rank: Int {
+        switch self {
+        case .partner: return 0
+        case .general: return 1
+        case .first: return 2
+        case .second: return 3
+        case .retail: return 4
+        }
+    }
+}
+
+// MARK: - 代理拿货记录
+
+struct AgentOrder: Codable, Identifiable, Hashable {
+    var id: UUID = UUID()
+    var productID: UUID? = nil
+    /// 冗余保存产品名，产品被删除后记录仍可读
+    var productName: String = ""
+    var specName: String = ""
+    var quantity: Int = 1
+    var unitPrice: Double = 0
+    var paid: Double = 0
+    var note: String = ""
+    /// 拿货时间，可改
+    var createdAt: Date = Date()
+
+    init(id: UUID = UUID(), productID: UUID? = nil, productName: String = "",
+         specName: String = "", quantity: Int = 1, unitPrice: Double = 0,
+         paid: Double = 0, note: String = "", createdAt: Date = Date()) {
+        self.id = id
+        self.productID = productID
+        self.productName = productName
+        self.specName = specName
+        self.quantity = quantity
+        self.unitPrice = unitPrice
+        self.paid = paid
+        self.note = note
+        self.createdAt = createdAt
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decodeIfPresent(UUID.self, forKey: .id) ?? UUID()
+        productID = try c.decodeIfPresent(UUID.self, forKey: .productID)
+        productName = try c.decodeIfPresent(String.self, forKey: .productName) ?? ""
+        specName = try c.decodeIfPresent(String.self, forKey: .specName) ?? ""
+        quantity = try c.decodeIfPresent(Int.self, forKey: .quantity) ?? 1
+        unitPrice = try c.decodeIfPresent(Double.self, forKey: .unitPrice) ?? 0
+        paid = try c.decodeIfPresent(Double.self, forKey: .paid) ?? 0
+        note = try c.decodeIfPresent(String.self, forKey: .note) ?? ""
+        createdAt = try c.decodeIfPresent(Date.self, forKey: .createdAt) ?? Date()
+    }
+
+    /// 本单金额 = 数量 × 单价
+    var amount: Double { Double(max(0, quantity)) * unitPrice }
+    /// 本单未结
+    var unpaid: Double { max(0, amount - paid) }
+    var displayName: String { productName.isEmpty ? "未填产品" : productName }
+}
+
+// MARK: - 代理商
+
+struct Agent: Codable, Identifiable, Hashable {
+    var id: UUID = UUID()
+    var name: String = ""
+    var phone: String = ""
+    var wechat: String = ""
+    var level: AgentLevel = .first
+    /// 地区 / 门店
+    var region: String = ""
+    /// 拿货折扣，0.6 = 6 折；1.0 = 不打折
+    var discount: Double = 0.6
+
+    /// 上级代理
+    var parentID: UUID? = nil
+    /// 冗余保存上级姓名，上级被删除后仍可读
+    var parentName: String = ""
+
+    /// 名下客户（人物关系）
+    var clientIDs: [UUID] = []
+    /// 拿货记录
+    var orders: [AgentOrder] = []
+
+    var note: String = ""
+    /// 加入 / 建档时间，可改
+    var joinedAt: Date = Date()
+
+    init(id: UUID = UUID(), name: String = "", phone: String = "", wechat: String = "",
+         level: AgentLevel = .first, region: String = "", discount: Double = 0.6,
+         parentID: UUID? = nil, parentName: String = "", clientIDs: [UUID] = [],
+         orders: [AgentOrder] = [], note: String = "", joinedAt: Date = Date()) {
+        self.id = id
+        self.name = name
+        self.phone = phone
+        self.wechat = wechat
+        self.level = level
+        self.region = region
+        self.discount = discount
+        self.parentID = parentID
+        self.parentName = parentName
+        self.clientIDs = clientIDs
+        self.orders = orders
+        self.note = note
+        self.joinedAt = joinedAt
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decodeIfPresent(UUID.self, forKey: .id) ?? UUID()
+        name = try c.decodeIfPresent(String.self, forKey: .name) ?? ""
+        phone = try c.decodeIfPresent(String.self, forKey: .phone) ?? ""
+        wechat = try c.decodeIfPresent(String.self, forKey: .wechat) ?? ""
+        level = try c.decodeIfPresent(AgentLevel.self, forKey: .level) ?? .first
+        region = try c.decodeIfPresent(String.self, forKey: .region) ?? ""
+        discount = try c.decodeIfPresent(Double.self, forKey: .discount) ?? 0.6
+        parentID = try c.decodeIfPresent(UUID.self, forKey: .parentID)
+        parentName = try c.decodeIfPresent(String.self, forKey: .parentName) ?? ""
+        clientIDs = try c.decodeIfPresent([UUID].self, forKey: .clientIDs) ?? []
+        orders = try c.decodeIfPresent([AgentOrder].self, forKey: .orders) ?? []
+        note = try c.decodeIfPresent(String.self, forKey: .note) ?? ""
+        joinedAt = try c.decodeIfPresent(Date.self, forKey: .joinedAt) ?? Date()
+    }
+
+    // MARK: 派生属性
+
+    /// 累计拿货数量
+    var totalQuantity: Int { orders.reduce(0) { $0 + max(0, $1.quantity) } }
+    /// 累计拿货金额
+    var totalAmount: Double { orders.reduce(0) { $0 + $1.amount } }
+    /// 累计已付
+    var totalPaid: Double { orders.reduce(0) { $0 + $1.paid } }
+    /// 累计未结
+    var totalUnpaid: Double { orders.reduce(0) { $0 + $1.unpaid } }
+    var orderCount: Int { orders.count }
+    var lastOrderAt: Date? { orders.map(\.createdAt).max() }
+
+    /// 折扣文字，例如「6 折」
+    var discountText: String {
+        if discount >= 0.999 { return "不打折" }
+        let zhe = discount * 10
+        if zhe == zhe.rounded() { return "\(Int(zhe)) 折" }
+        return String(format: "%.1f 折", zhe)
+    }
+
+    var displayRegion: String { region.isEmpty ? "未填地区" : region }
+
+    /// 头像首字
+    var initial: String {
+        let n = name.trimmingCharacters(in: .whitespaces)
+        guard let f = n.first else { return "代" }
+        return String(f)
+    }
+
+    /// 是否已建档超过 N 天
+    func daysSinceJoined(now: Date = Date()) -> Int {
+        let cal = Calendar.current
+        let d = cal.dateComponents([.day], from: cal.startOfDay(for: joinedAt),
+                                   to: cal.startOfDay(for: now)).day ?? 0
+        return max(0, d)
+    }
+}
+
 // MARK: - 功能开关
 
 struct FeatureFlags: Codable, Equatable {
@@ -495,6 +680,17 @@ struct FeatureFlags: Codable, Equatable {
     var steps: Bool = true
     var notes: Bool = true
     var backup: Bool = true
+
+    // MARK: 代理模块（总开关 + 四项子功能，都能单独关）
+    var agents: Bool = true
+    /// 父级关系：显示上级与下级代理
+    var agentParent: Bool = true
+    /// 数量：拿货数量与件数统计
+    var agentQuantity: Bool = true
+    /// 人物关系：代理名下的客户
+    var agentRelation: Bool = true
+    /// 时间：加入时间、拿货时间
+    var agentTime: Bool = true
 
     init() {}
 
@@ -508,6 +704,12 @@ struct FeatureFlags: Codable, Equatable {
         steps = try c.decodeIfPresent(Bool.self, forKey: .steps) ?? true
         notes = try c.decodeIfPresent(Bool.self, forKey: .notes) ?? true
         backup = try c.decodeIfPresent(Bool.self, forKey: .backup) ?? true
+
+        agents = try c.decodeIfPresent(Bool.self, forKey: .agents) ?? true
+        agentParent = try c.decodeIfPresent(Bool.self, forKey: .agentParent) ?? true
+        agentQuantity = try c.decodeIfPresent(Bool.self, forKey: .agentQuantity) ?? true
+        agentRelation = try c.decodeIfPresent(Bool.self, forKey: .agentRelation) ?? true
+        agentTime = try c.decodeIfPresent(Bool.self, forKey: .agentTime) ?? true
     }
 }
 
@@ -641,17 +843,19 @@ struct AppSettings: Codable {
 // MARK: - 备份快照
 
 struct StoreSnapshot: Codable {
-    var version: Int = 3
+    var version: Int = 4
     var exportedAt: Date = Date()
     var clients: [Client] = []
     var settings: AppSettings? = nil
     var teachers: [Teacher] = []
     var appointments: [Appointment] = []
     var products: [Product] = []
+    var agents: [Agent] = []
 
-    init(version: Int = 3, exportedAt: Date = Date(), clients: [Client],
+    init(version: Int = 4, exportedAt: Date = Date(), clients: [Client],
          settings: AppSettings? = nil, teachers: [Teacher] = [],
-         appointments: [Appointment] = [], products: [Product] = []) {
+         appointments: [Appointment] = [], products: [Product] = [],
+         agents: [Agent] = []) {
         self.version = version
         self.exportedAt = exportedAt
         self.clients = clients
@@ -659,6 +863,7 @@ struct StoreSnapshot: Codable {
         self.teachers = teachers
         self.appointments = appointments
         self.products = products
+        self.agents = agents
     }
 
     init(from decoder: Decoder) throws {
@@ -670,6 +875,7 @@ struct StoreSnapshot: Codable {
         teachers = try c.decodeIfPresent([Teacher].self, forKey: .teachers) ?? []
         appointments = try c.decodeIfPresent([Appointment].self, forKey: .appointments) ?? []
         products = try c.decodeIfPresent([Product].self, forKey: .products) ?? []
+        agents = try c.decodeIfPresent([Agent].self, forKey: .agents) ?? []
     }
 }
 

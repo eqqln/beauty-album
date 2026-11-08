@@ -12,6 +12,7 @@ final class Store: ObservableObject {
     @Published var teachers: [Teacher] = []
     @Published var appointments: [Appointment] = []
     @Published var products: [Product] = []
+    @Published var agents: [Agent] = []
     @Published var settings: AppSettings = AppSettings()
     @Published var lastError: String?
     /// 密码锁是否已解锁。未开启锁时恒为 true。
@@ -63,6 +64,12 @@ final class Store: ObservableObject {
             .debounce(for: .seconds(0.4), scheduler: RunLoop.main)
             .sink { [weak self] _ in self?.save() }
             .store(in: &cancellables)
+
+        $agents
+            .dropFirst()
+            .debounce(for: .seconds(0.4), scheduler: RunLoop.main)
+            .sink { [weak self] _ in self?.save() }
+            .store(in: &cancellables)
     }
 
     // MARK: - 路径
@@ -105,6 +112,7 @@ final class Store: ObservableObject {
             teachers = snap.teachers
             appointments = snap.appointments
             products = snap.products
+            agents = snap.agents
         }
         if let data = try? Data(contentsOf: settingsURL),
            let s = try? Store.makeDecoder().decode(AppSettings.self, from: data) {
@@ -121,7 +129,7 @@ final class Store: ObservableObject {
         do {
             let snap = StoreSnapshot(clients: clients, settings: settings,
                                      teachers: teachers, appointments: appointments,
-                                     products: products)
+                                     products: products, agents: agents)
             let data = try Store.makeEncoder().encode(snap)
             try data.write(to: dataURL, options: .atomic)
 
@@ -421,6 +429,154 @@ final class Store: ObservableObject {
         return (claimed, pending)
     }
 
+    // MARK: - 代理
+
+    func agent(_ id: UUID) -> Agent? {
+        agents.first { $0.id == id }
+    }
+
+    var sortedAgents: [Agent] {
+        agents.sorted { $0.joinedAt > $1.joinedAt }
+    }
+
+    @discardableResult
+    func addAgent(_ a: Agent) -> UUID {
+        var copy = a
+        // 冗余上级姓名，上级改名或删除后历史仍可读
+        if let pid = copy.parentID, let p = agent(pid) {
+            copy.parentName = p.name
+        } else if copy.parentID == nil {
+            copy.parentName = ""
+        }
+        agents.append(copy)
+        save()
+        return copy.id
+    }
+
+    func updateAgent(_ a: Agent) {
+        guard let i = agents.firstIndex(where: { $0.id == a.id }) else { return }
+        var copy = a
+        if let pid = copy.parentID, let p = agent(pid) {
+            copy.parentName = p.name
+        } else if copy.parentID == nil {
+            copy.parentName = ""
+        }
+        agents[i] = copy
+        save()
+    }
+
+    func deleteAgent(_ id: UUID) {
+        agents.removeAll { $0.id == id }
+        // 下级代理脱离该上级，parentName 保留作为历史痕迹
+        for i in agents.indices where agents[i].parentID == id {
+            agents[i].parentID = nil
+        }
+        save()
+    }
+
+    /// 改上级，自带成环保护：不能把自己或自己的下级设为上级
+    func setParent(_ parentID: UUID?, for agentID: UUID) {
+        guard let i = agents.firstIndex(where: { $0.id == agentID }) else { return }
+        if let pid = parentID {
+            if pid == agentID { return }
+            if isDescendant(pid, of: agentID) { return }
+        }
+        agents[i].parentID = parentID
+        agents[i].parentName = parentID.flatMap { agent($0)?.name } ?? ""
+        save()
+    }
+
+    // MARK: 上下级树
+
+    func childAgents(of id: UUID) -> [Agent] {
+        agents.filter { $0.parentID == id }
+            .sorted { $0.joinedAt < $1.joinedAt }
+    }
+
+    var rootAgents: [Agent] {
+        agents.filter { $0.parentID == nil || agent($0.parentID!) == nil }
+            .sorted { $0.joinedAt > $1.joinedAt }
+    }
+
+    /// 第几层，顶层为 1。成环时最多回溯 32 层就停，避免死循环
+    func agentDepth(_ id: UUID) -> Int {
+        var depth = 1
+        var cur = agent(id)
+        var guardCount = 0
+        while let p = cur?.parentID, let parent = agent(p), guardCount < 32 {
+            depth += 1
+            cur = parent
+            guardCount += 1
+        }
+        return depth
+    }
+
+    /// 从自己往上直到顶层的一条链（不含自己）
+    func ancestors(of id: UUID) -> [Agent] {
+        var out: [Agent] = []
+        var cur = agent(id)
+        var guardCount = 0
+        while let p = cur?.parentID, let parent = agent(p), guardCount < 32 {
+            out.append(parent)
+            cur = parent
+            guardCount += 1
+        }
+        return Array(out.reversed())
+    }
+
+    /// 所有下级（含多级），广度优先
+    func descendants(of id: UUID) -> [Agent] {
+        var out: [Agent] = []
+        var queue = childAgents(of: id)
+        var seen = Set<UUID>()
+        while !queue.isEmpty {
+            let cur = queue.removeFirst()
+            if seen.contains(cur.id) { continue }
+            seen.insert(cur.id)
+            out.append(cur)
+            queue.append(contentsOf: childAgents(of: cur.id))
+        }
+        return out
+    }
+
+    func descendantCount(of id: UUID) -> Int { descendants(of: id).count }
+
+    func isDescendant(_ candidate: UUID, of ancestor: UUID) -> Bool {
+        descendants(of: ancestor).contains { $0.id == candidate }
+    }
+
+    // MARK: 拿货记录
+
+    func addOrder(_ o: AgentOrder, to agentID: UUID) {
+        guard let i = agents.firstIndex(where: { $0.id == agentID }) else { return }
+        agents[i].orders.append(o)
+        save()
+    }
+
+    func updateOrder(_ o: AgentOrder, agentID: UUID) {
+        guard let i = agents.firstIndex(where: { $0.id == agentID }),
+              let j = agents[i].orders.firstIndex(where: { $0.id == o.id }) else { return }
+        agents[i].orders[j] = o
+        save()
+    }
+
+    func deleteOrder(_ id: UUID, agentID: UUID) {
+        guard let i = agents.firstIndex(where: { $0.id == agentID }) else { return }
+        agents[i].orders.removeAll { $0.id == id }
+        save()
+    }
+
+    // MARK: 代理统计
+
+    var totalAgentOrderAmount: Double { agents.reduce(0) { $0 + $1.totalAmount } }
+    var totalAgentOrderQuantity: Int { agents.reduce(0) { $0 + $1.totalQuantity } }
+    var totalAgentUnpaid: Double { agents.reduce(0) { $0 + $1.totalUnpaid } }
+    /// 累计业绩：自己 + 全部下级
+    func agentTeamAmount(_ id: UUID) -> Double {
+        let selfAmount = agent(id)?.totalAmount ?? 0
+        return descendants(of: id).reduce(selfAmount) { $0 + $1.totalAmount }
+    }
+
     // MARK: - 收款码
 
     func savePaymentQR(image: UIImage, kind: PaymentQRKind) -> Bool {
@@ -504,6 +660,10 @@ final class Store: ObservableObject {
     /// 忘记密码时的兜底：清空本机数据并关闭锁
     func resetAllData() {
         clients = []
+        teachers = []
+        appointments = []
+        products = []
+        agents = []
         settings = AppSettings()
         try? FileManager.default.removeItem(at: mediaURL)
         try? FileManager.default.createDirectory(at: mediaURL, withIntermediateDirectories: true)
@@ -547,6 +707,7 @@ final class Store: ObservableObject {
         teachers = snapshot.teachers
         appointments = snapshot.appointments
         products = snapshot.products
+        agents = snapshot.agents
 
         for c in clients {
             let dir = clientDirectory(c.id)
@@ -627,6 +788,11 @@ final class Store: ObservableObject {
                 }
             }
             products.append(p)
+        }
+
+        let existingAgents = Set(agents.map(\.id))
+        for a in snapshot.agents where !existingAgents.contains(a.id) {
+            agents.append(a)
         }
 
         save()

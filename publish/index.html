@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>美颜相册 · 下载</title>
+<style>
+  :root{
+    --rose:#c9757f; --rose-deep:#a9555f; --rose-light:#f7e7e9;
+    --cream:#fdf8f6; --ink:#3a2f30; --ink-soft:#6b5d5e; --muted:#9a8c8d;
+    --card:#ffffff; --line:#efe4e2;
+  }
+  *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+  body{
+    margin:0;padding:28px 20px 48px;
+    font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Helvetica Neue",sans-serif;
+    background:var(--cream);color:var(--ink);
+    display:flex;flex-direction:column;align-items:center;
+    min-height:100vh;
+  }
+  .wrap{width:100%;max-width:460px}
+  .icon{
+    width:84px;height:84px;border-radius:20px;margin:8px auto 18px;
+    background:linear-gradient(160deg,#e8a5ad,#b0606a);
+    display:flex;align-items:center;justify-content:center;
+    box-shadow:0 10px 24px rgba(169,85,95,.28);
+    font-size:38px;
+  }
+  h1{font-size:22px;margin:0 0 6px;text-align:center;letter-spacing:.5px}
+  .sub{text-align:center;color:var(--muted);font-size:13px;margin:0 0 26px}
+  .card{
+    background:var(--card);border:1px solid var(--line);border-radius:18px;
+    padding:18px;margin-bottom:14px;
+  }
+  .meta{display:flex;justify-content:space-between;font-size:13px;color:var(--ink-soft);padding:6px 0}
+  .meta + .meta{border-top:1px solid var(--line)}
+  .meta span:last-child{color:var(--ink);font-weight:600}
+  .btn{
+    display:block;text-align:center;text-decoration:none;
+    background:linear-gradient(135deg,#d9848d,#a9555f);color:#fff;
+    font-size:17px;font-weight:600;padding:16px;border-radius:14px;
+    margin:20px 0 10px;box-shadow:0 8px 20px rgba(169,85,95,.26);
+  }
+  .btn:active{transform:scale(.985)}
+  .hint{font-size:12px;color:var(--muted);text-align:center;line-height:1.7;margin:0}
+  h2{font-size:14px;margin:0 0 12px;color:var(--ink)}
+  ol{margin:0;padding-left:20px;font-size:13px;color:var(--ink-soft);line-height:1.9}
+  ol b{color:var(--ink)}
+  .tag{
+    display:inline-block;font-size:11px;padding:3px 9px;border-radius:999px;
+    background:var(--rose-light);color:var(--rose-deep);font-weight:600;
+    margin-bottom:10px;
+  }
+  .foot{text-align:center;font-size:11px;color:var(--muted);margin-top:22px;line-height:1.8}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <div class="icon">🌸</div>
+  <h1>美颜相册</h1>
+  <p class="sub">美容院客户照片与疗程管理</p>
+
+  <div class="card">
+    <div class="meta"><span>版本</span><span>1.0.6 (build 6)</span></div>
+    <div class="meta"><span>大小</span><span>1.57 MB</span></div>
+    <div class="meta"><span>系统要求</span><span>iOS 16.0 及以上</span></div>
+    <div class="meta"><span>支持设备</span><span>iPhone / iPad</span></div>
+    <div class="meta"><span>签名</span><span>未签名</span></div>
+  </div>
+
+  <a class="btn" href="./BeautyAlbum-1.0.6.ipa" download>下载安装包</a>
+  <p class="hint">点击后用「文件」App 保存，再用签名工具安装</p>
+
+  <div class="card" style="margin-top:22px">
+    <span class="tag">怎么装到手机上</span>
+    <ol>
+      <li>点上面的按钮，把 <b>.ipa</b> 存到手机或电脑</li>
+      <li>用 <b>Sideloadly</b> / <b>AltStore</b> / <b>SideStore</b> 自签安装（需要 Apple ID）</li>
+      <li>系统支持的话，<b>TrollStore</b> 可以直接装，不用签名</li>
+      <li>有开发者证书的，用 <b>爱思助手</b> 或 Xcode 重签后安装</li>
+    </ol>
+  </div>
+
+  <div class="card">
+    <span class="tag">这次更新了什么</span>
+    <ol>
+      <li>对比图可以左右滑动，切换下一组使用前 / 使用后</li>
+      <li>客户建档时间、每一步完成时间都能看、能改</li>
+      <li>收款输入金额后点「确认」即可收起键盘</li>
+      <li>恢复备份时不再选不到 zip 文件，本机备份可一键恢复</li>
+      <li>新增自动备份：可设每隔几天、每天几点自动打包</li>
+    </ol>
+  </div>
+
+  <p class="foot">未签名包需要自行签名才能安装<br>数据全部保存在本机，不上传服务器</p>
+
+</div>
+</body>
+</html>

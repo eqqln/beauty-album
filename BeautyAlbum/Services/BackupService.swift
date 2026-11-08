@@ -33,6 +33,7 @@ enum BackupService {
         let teachers = store.teachers
         let appointments = store.appointments
         let products = store.products
+        let agents = store.agents
         let settings = store.settings
         let media = store.mediaURL
         let qr = store.qrURL
@@ -40,14 +41,14 @@ enum BackupService {
 
         return try await Task.detached(priority: .userInitiated) {
             try buildArchive(clients: clients, teachers: teachers, appointments: appointments,
-                             products: products, settings: settings,
+                             products: products, agents: agents, settings: settings,
                              mediaURL: media, qrURL: qr, exportsURL: exports)
         }.value
     }
 
     private static func buildArchive(clients: [Client], teachers: [Teacher],
                                      appointments: [Appointment], products: [Product],
-                                     settings: AppSettings,
+                                     agents: [Agent], settings: AppSettings,
                                      mediaURL: URL, qrURL: URL, exportsURL: URL) throws -> BuildResult {
         let fm = FileManager.default
         let stamp = Fmt.stamp.string(from: Date())
@@ -61,7 +62,7 @@ enum BackupService {
         // 1. 元数据（恢复时据此重建，图片按 ID 匹配）
         let snap = StoreSnapshot(clients: clients, settings: settings,
                                  teachers: teachers, appointments: appointments,
-                                 products: products)
+                                 products: products, agents: agents)
         let enc = JSONEncoder()
         enc.outputFormatting = [.prettyPrinted, .sortedKeys]
         enc.dateEncodingStrategy = .iso8601
@@ -161,13 +162,30 @@ enum BackupService {
             write(appointmentsInfo(appointments), to: root.appendingPathComponent("预约记录.txt"))
         }
 
-        // 8. 备份说明与客户总览（打开压缩包第一眼就能看懂里面有什么）
+        // 8. 代理：一位一个文件夹，放档案与拿货明细
+        if !agents.isEmpty {
+            let aRoot = root.appendingPathComponent("代理", isDirectory: true)
+            try? fm.createDirectory(at: aRoot, withIntermediateDirectories: true)
+            for a in agents.sorted(by: { $0.joinedAt < $1.joinedAt }) {
+                let dirName = sanitize(a.name, fallback: "代理") + "_"
+                    + String(a.id.uuidString.prefix(4))
+                let d = aRoot.appendingPathComponent(dirName, isDirectory: true)
+                try? fm.createDirectory(at: d, withIntermediateDirectories: true)
+                write(agentInfo(a, clients: clients), to: d.appendingPathComponent("代理信息.txt"))
+                write(agentOrdersInfo(a), to: d.appendingPathComponent("拿货记录.txt"))
+            }
+            write(agentOverviewInfo(agents, clients: clients),
+                  to: root.appendingPathComponent("代理总览.txt"))
+        }
+
+        // 9. 备份说明与客户总览（打开压缩包第一眼就能看懂里面有什么）
         write(readmeInfo(clients: clients, settings: settings, photoCount: photoCount,
-                         teachers: teachers, appointments: appointments, products: products),
+                         teachers: teachers, appointments: appointments,
+                         products: products, agents: agents),
               to: root.appendingPathComponent("备份说明.txt"))
         write(overviewInfo(clients), to: root.appendingPathComponent("客户总览.txt"))
 
-        // 9. 打包
+        // 10. 打包
         let zipURL = exportsURL.appendingPathComponent(rootName + ".zip")
         let writer = try ZipWriter(url: zipURL)
         try writer.addDirectory(rootName)
@@ -322,11 +340,11 @@ enum BackupService {
     /// 备份包根目录的说明文件
     private static func readmeInfo(clients: [Client], settings: AppSettings, photoCount: Int,
                                    teachers: [Teacher], appointments: [Appointment],
-                                   products: [Product]) -> String {
+                                   products: [Product], agents: [Agent]) -> String {
         """
         【店铺】\(settings.shopName)
         【导出时间】\(Fmt.dateTime.string(from: Date()))
-        【数据量】客户 \(clients.count) 位 · 照片 \(photoCount) 张 · 老师 \(teachers.count) 位 · 预约 \(appointments.count) 条 · 产品 \(products.count) 个
+        【数据量】客户 \(clients.count) 位 · 照片 \(photoCount) 张 · 老师 \(teachers.count) 位 · 预约 \(appointments.count) 条 · 产品 \(products.count) 个 · 代理 \(agents.count) 位
         【照片阶段叫法】\(settings.beforeLabel) / \(settings.afterLabel)
 
         —— 每位客户一个文件夹，里面是 ——
@@ -341,6 +359,8 @@ enum BackupService {
         客户总览.txt      所有客户一行一个，方便快速核对
         老师/             老师照片和资料
         产品/             产品图片、规格、价格、库存、使用步骤
+        代理/             每位代理一个文件夹：代理信息、拿货记录
+        代理总览.txt      所有代理一行一个，含上级、加入时间、拿货件数与金额
         预约记录.txt      全部预约
         收款码/           微信、支付宝收款码
         data.json         完整数据，App 内「从备份恢复」靠这个文件重建全部内容
@@ -349,6 +369,102 @@ enum BackupService {
         App 里：设置 → 备份与恢复 → 从备份恢复 → 选这个 zip
         选「覆盖恢复」清空后还原，选「合并恢复」保留现有客户再追加
         """
+    }
+
+    /// 代理总览：一行一个，含上级、加入时间、件数、金额
+    private static func agentOverviewInfo(_ agents: [Agent], clients: [Client]) -> String {
+        var s = "代理总览（共 \(agents.count) 位）\n\n"
+        s += "序号  姓名          等级        上级          加入        客户  件数   拿货额    未结\n"
+        let sorted = agents.sorted { $0.joinedAt < $1.joinedAt }
+        for (i, a) in sorted.enumerated() {
+            let name = pad(a.name.isEmpty ? "未命名" : a.name, 12)
+            let level = pad(a.level.rawValue, 10)
+            let parent = pad(a.parentName.isEmpty ? "-" : a.parentName, 12)
+            let joined = pad(Fmt.dateOnly.string(from: a.joinedAt), 10)
+            let cn = pad("\(a.clientIDs.count) 位", 5)
+            let qty = pad("\(a.totalQuantity)", 5)
+            let amount = pad(Fmt.money(a.totalAmount), 9)
+            let unpaid = a.totalUnpaid > 0 ? Fmt.money(a.totalUnpaid) : "-"
+            s += "\(pad("\(i + 1)", 5))\(name)\(level)\(parent)\(joined)\(cn)\(qty)\(amount)\(unpaid)\n"
+        }
+
+        let totalQty = agents.reduce(0) { $0 + $1.totalQuantity }
+        let totalAmount = agents.reduce(0) { $0 + $1.totalAmount }
+        let totalPaid = agents.reduce(0) { $0 + $1.totalPaid }
+        let totalUnpaid = agents.reduce(0) { $0 + $1.totalUnpaid }
+        s += "\n合计：件数 \(totalQty) · 拿货额 \(Fmt.money(totalAmount)) · 已付 \(Fmt.money(totalPaid)) · 未结 \(Fmt.money(totalUnpaid))\n"
+        return s
+    }
+
+    /// 单个代理的档案
+    private static func agentInfo(_ a: Agent, clients: [Client]) -> String {
+        var s = """
+        姓名：\(a.name)
+        等级：\(a.level.rawValue)
+        拿货折扣：\(a.discountText)
+        电话：\(a.phone.isEmpty ? "未填写" : a.phone)
+        微信：\(a.wechat.isEmpty ? "未填写" : a.wechat)
+        地区：\(a.displayRegion)
+        上级代理：\(a.parentName.isEmpty ? "无（顶层）" : a.parentName)
+        加入时间：\(Fmt.dateTime.string(from: a.joinedAt))（已 \(a.daysSinceJoined()) 天）
+
+        —— 拿货汇总 ——
+        记录笔数：\(a.orderCount)
+        累计件数：\(a.totalQuantity)
+        累计金额：\(Fmt.money(a.totalAmount))
+        已付：\(Fmt.money(a.totalPaid))
+        未结：\(Fmt.money(a.totalUnpaid))
+        最近拿货：\(a.lastOrderAt.map { Fmt.dateTime.string(from: $0) } ?? "无")
+
+        —— 名下客户 ——
+        """
+
+        if a.clientIDs.isEmpty {
+            s += "（无）\n"
+        } else {
+            s += "共 \(a.clientIDs.count) 位：\n"
+            for id in a.clientIDs {
+                if let c = clients.first(where: { $0.id == id }) {
+                    s += "  · \(c.name.isEmpty ? "未命名" : c.name)　\(c.phone.isEmpty ? "未留电话" : c.phone)\n"
+                } else {
+                    s += "  · （客户已删除 \(id.uuidString.prefix(8))）\n"
+                }
+            }
+        }
+
+        s += "\n—— 备注 ——\n\(a.note.isEmpty ? "（无）" : a.note)\n"
+        return s
+    }
+
+    /// 拿货记录明细
+    private static func agentOrdersInfo(_ a: Agent) -> String {
+        var s = "拿货记录（\(a.name)）共 \(a.orderCount) 笔\n\n"
+        guard !a.orders.isEmpty else { return s + "（暂无记录）\n" }
+
+        s += "时间              产品            规格        数量   单价      金额      已付      未结\n"
+        let sorted = a.orders.sorted { $0.createdAt < $1.createdAt }
+        for o in sorted {
+            let t = pad(Fmt.dateTime.string(from: o.createdAt), 18)
+            let p = pad(o.displayName, 16)
+            let spec = pad(o.specName.isEmpty ? "-" : o.specName, 12)
+            let q = pad("\(o.quantity)", 7)
+            let price = pad(Fmt.money(o.unitPrice), 10)
+            let amt = pad(Fmt.money(o.amount), 10)
+            let paid = pad(Fmt.money(o.paid), 10)
+            let unpaid = o.unpaid > 0 ? Fmt.money(o.unpaid) : "-"
+            s += "\(t)\(p)\(spec)\(q)\(price)\(amt)\(paid)\(unpaid)\n"
+        }
+
+        s += "\n合计：件数 \(a.totalQuantity) · 金额 \(Fmt.money(a.totalAmount)) · 已付 \(Fmt.money(a.totalPaid)) · 未结 \(Fmt.money(a.totalUnpaid))\n"
+
+        let noted = sorted.filter { !$0.note.isEmpty }
+        if !noted.isEmpty {
+            s += "\n—— 备注 ——\n"
+            for o in noted {
+                s += "\(Fmt.dateOnly.string(from: o.createdAt))　\(o.displayName)：\(o.note)\n"
+            }
+        }
+        return s
     }
 
     /// 所有客户一行一个，方便对账

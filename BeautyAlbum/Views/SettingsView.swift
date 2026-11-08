@@ -198,10 +198,38 @@ struct SettingsView: View {
             Toggle(isOn: $store.settings.features.backup) {
                 featureLabel("备份与恢复", "externaldrive.badge.timemachine", "导出 ZIP、网盘")
             }
+
+            Toggle(isOn: $store.settings.features.agents) {
+                featureLabel("代理商", "person.3.fill", "代理档案、拿货、上下级")
+            }
+
+            if store.settings.features.agents {
+                Toggle(isOn: $store.settings.features.agentParent) {
+                    subFeatureLabel("　父级关系", "上级与下级树")
+                }
+                Toggle(isOn: $store.settings.features.agentQuantity) {
+                    subFeatureLabel("　数量", "拿货件数与金额")
+                }
+                Toggle(isOn: $store.settings.features.agentRelation) {
+                    subFeatureLabel("　人物关系", "代理名下客户")
+                }
+                Toggle(isOn: $store.settings.features.agentTime) {
+                    subFeatureLabel("　时间", "加入时间、拿货时间")
+                }
+            }
         } header: {
             Text("功能模块")
         } footer: {
-            Text("关掉的模块会从底部标签和客户详情页隐藏，已有数据不会删除，重新打开即可看到。")
+            Text("关掉的模块会从底部标签和客户详情页隐藏，已有数据不会删除，重新打开即可看到。代理的四项子功能只影响显示，关掉后数据仍然保留。")
+        }
+    }
+
+    private func subFeatureLabel(_ title: String, _ sub: String) -> some View {
+        HStack(spacing: 8) {
+            VStack(alignment: .leading, spacing: 1) {
+                Text(title).font(.system(size: 13))
+                Text(sub).font(.system(size: 10)).foregroundColor(Theme.muted)
+            }
         }
     }
 
