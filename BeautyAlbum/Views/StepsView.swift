@@ -139,8 +139,10 @@ struct StepsView: View {
                         Text("疗程已走完")
                             .font(.system(size: 18, weight: .semibold))
                             .foregroundColor(Theme.ink)
-                    } else {
-                        // 步数可以直接改：左右箭头逐步走，点中间数字跳到任意一步
+                    }
+
+                    // 步数随时可改：左右箭头逐步走，点中间数字跳到任意一步
+                    if !client.steps.isEmpty {
                         HStack(spacing: 8) {
                             Button {
                                 stepBack()
@@ -161,7 +163,7 @@ struct StepsView: View {
                                         jump(to: idx)
                                     } label: {
                                         if idx < donePrefix {
-                                            Label("第 \(idx + 1) 步 · \(st.title)（已完成）",
+                                            Label("第 \(idx + 1) 步 · \(st.title)（已完成，点此回到这步）",
                                                   systemImage: "checkmark.circle")
                                         } else if idx == donePrefix {
                                             Label("第 \(idx + 1) 步 · \(st.title)（当前）",
@@ -190,17 +192,20 @@ struct StepsView: View {
                                     .font(.system(size: 12, weight: .bold))
                                     .foregroundColor(.white)
                                     .frame(width: 28, height: 28)
-                                    .background(Theme.rose)
+                                    .background(allDone ? Theme.muted.opacity(0.4) : Theme.rose)
                                     .clipShape(Circle())
                             }
                             .buttonStyle(.plain)
+                            .disabled(allDone)
                         }
 
-                        Text("共 \(client.steps.count) 步 · 点数字可跳到任意一步")
+                        Text(allDone
+                             ? "共 \(client.steps.count) 步 · 点数字可回到任意一步重做"
+                             : "共 \(client.steps.count) 步 · 点数字可跳到任意一步")
                             .font(.system(size: 10))
                             .foregroundColor(Theme.muted)
 
-                        if !client.steps.isEmpty {
+                        if !allDone {
                             Text(client.steps[min(client.currentStepNumber - 1,
                                                   client.steps.count - 1)].title)
                                 .font(.system(size: 15, weight: .semibold))
