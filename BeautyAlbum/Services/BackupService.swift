@@ -354,16 +354,17 @@ enum BackupService {
     /// 所有客户一行一个，方便对账
     private static func overviewInfo(_ clients: [Client]) -> String {
         var s = "客户总览（共 \(clients.count) 位）\n\n"
-        s += "序号  姓名          电话              照片  进度      应收      已付      未付\n"
+        s += "序号  姓名          电话              建档        照片  进度      应收      已付      未付\n"
         for (i, c) in clients.enumerated() {
             let name = pad(c.name.isEmpty ? "未命名" : c.name, 12)
             let phone = pad(c.phone.isEmpty ? "未填" : c.phone, 16)
+            let created = pad(Fmt.dateOnly.string(from: c.createdAt), 12)
             let photos = pad("\(c.photos.count) 张", 5)
             let step = pad("\(c.sequentialDoneCount)/\(c.steps.count) 步", 9)
             let quoted = pad(c.quotedPrice > 0 ? Fmt.money(c.quotedPrice) : "-", 9)
             let paid = pad(Fmt.money(c.paidAmount), 9)
             let unpaid = c.unpaidAmount > 0 ? Fmt.money(c.unpaidAmount) : "-"
-            s += "\(pad("\(i + 1)", 5))\(name)\(phone)\(photos)\(step)\(quoted)\(paid)\(unpaid)\n"
+            s += "\(pad("\(i + 1)", 5))\(name)\(phone)\(created)\(photos)\(step)\(quoted)\(paid)\(unpaid)\n"
         }
         let totalQuoted = clients.reduce(0) { $0 + $1.quotedPrice }
         let totalPaid = clients.reduce(0) { $0 + $1.paidAmount }
