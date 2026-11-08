@@ -758,6 +758,16 @@ struct ProductEditSheet: View {
             .navigationTitle(isNew ? "添加产品" : "编辑产品")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
+                // 数字键盘没有回车键，补一个「完成」收键盘
+                ToolbarItemGroup(placement: .keyboard) {
+                    Spacer()
+                    Button("完成") {
+                        UIApplication.shared.sendAction(
+                            #selector(UIResponder.resignFirstResponder),
+                            to: nil, from: nil, for: nil)
+                    }
+                    .fontWeight(.semibold)
+                }
                 ToolbarItem(placement: .cancellationAction) {
                     Button("取消") { dismiss() }
                 }

@@ -9,6 +9,9 @@ struct StepsView: View {
     @State private var renameText = ""
     @State private var noteTarget: StepItem?
     @State private var noteText = ""
+    /// 要修改完成时间的环节
+    @State private var timeTarget: StepItem?
+    @State private var timeDraft = Date()
     @State private var showResetConfirm = false
     /// 快进到第 N 步（index）
     @State private var skipIndex: Int?
@@ -83,6 +86,16 @@ struct StepsView: View {
                 }
             }
             .presentationDetents([.medium])
+        }
+
+        .sheet(item: $timeTarget) { target in
+            DateTimeEditorSheet(
+                title: "「\(target.title)」的时间",
+                hint: "这一步的完成时间会随备份一起保存，可以按实际情况改成别的日期。",
+                initial: timeDraft
+            ) { d in
+                commitTime(target.id, d)
+            }
         }
 
         .alert("套用流程模板？", isPresented: $showResetConfirm) {
@@ -324,9 +337,22 @@ struct StepsView: View {
                 }
                 HStack(spacing: 6) {
                     if let d = step.doneAt {
-                        Text(Fmt.dateTime.string(from: d))
-                            .font(.system(size: 10))
+                        Button {
+                            timeDraft = d
+                            timeTarget = step
+                        } label: {
+                            HStack(spacing: 3) {
+                                Image(systemName: "clock")
+                                    .font(.system(size: 8, weight: .medium))
+                                Text(Fmt.dateTime.string(from: d))
+                                    .font(.system(size: 10))
+                                Image(systemName: "pencil")
+                                    .font(.system(size: 8, weight: .semibold))
+                            }
                             .foregroundColor(Theme.muted)
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
                     }
                     if !step.note.isEmpty {
                         Text(step.note)
@@ -356,6 +382,14 @@ struct StepsView: View {
                     noteText = step.note
                 } label: {
                     Label("备注", systemImage: "text.bubble")
+                }
+                if step.done {
+                    Button {
+                        timeDraft = step.doneAt ?? Date()
+                        timeTarget = step
+                    } label: {
+                        Label("修改完成时间", systemImage: "clock.arrow.circlepath")
+                    }
                 }
                 Button {
                     move(index: index, delta: -1)
@@ -535,6 +569,13 @@ struct StepsView: View {
             }
         }
         if changed { store.save() }
+    }
+
+    /// 改某一步的完成时间
+    private func commitTime(_ id: UUID, _ date: Date) {
+        guard let i = client.steps.firstIndex(where: { $0.id == id }) else { return }
+        client.steps[i].doneAt = date
+        store.save()
     }
 
     private func commitRename() {

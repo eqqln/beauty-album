@@ -144,8 +144,9 @@ final class Store: ObservableObject {
     }
 
     @discardableResult
-    func addClient(name: String, phone: String, note: String) -> UUID {
-        var c = Client(name: name, phone: phone, note: note)
+    func addClient(name: String, phone: String, note: String,
+                   createdAt: Date = Date()) -> UUID {
+        var c = Client(name: name, phone: phone, note: note, createdAt: createdAt)
         c.steps = settings.stepTemplate.map { StepItem(title: $0) }
         clients.append(c)
         try? FileManager.default.createDirectory(at: clientDirectory(c.id), withIntermediateDirectories: true)

@@ -18,6 +18,8 @@ struct PaymentView: View {
     @State private var showSetQuoted = false
     @State private var quotedDraft = ""
     @State private var qrPickerItem: PhotosPickerItem?
+    /// 金额输入框的焦点，用于「确认」时收起数字键盘
+    @FocusState private var amountFocused: Bool
 
     private var amount: Double {
         Double(amountText.replacingOccurrences(of: ",", with: "")) ?? 0
@@ -89,6 +91,14 @@ struct PaymentView: View {
                     await MainActor.run { flash("图片读取失败") }
                 }
                 await MainActor.run { qrPickerItem = nil }
+            }
+        }
+        // 数字键盘上没有回车键，补一个「完成」收键盘
+        .toolbar {
+            ToolbarItemGroup(placement: .keyboard) {
+                Spacer()
+                Button("完成") { amountFocused = false }
+                    .fontWeight(.semibold)
             }
         }
     }
@@ -242,15 +252,36 @@ struct PaymentView: View {
 
     private var amountCard: some View {
         VStack(spacing: 12) {
-            HStack(alignment: .firstTextBaseline, spacing: 4) {
-                Text("¥")
-                    .font(.system(size: 24, weight: .semibold))
-                    .foregroundColor(Theme.roseDeep)
-                TextField("0", text: $amountText)
-                    .keyboardType(.decimalPad)
-                    .font(.system(size: 40, weight: .bold, design: .rounded))
-                    .foregroundColor(Theme.ink)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+            HStack(spacing: 10) {
+                HStack(alignment: .firstTextBaseline, spacing: 4) {
+                    Text("¥")
+                        .font(.system(size: 24, weight: .semibold))
+                        .foregroundColor(Theme.roseDeep)
+                    TextField("0", text: $amountText)
+                        .keyboardType(.decimalPad)
+                        .focused($amountFocused)
+                        .font(.system(size: 40, weight: .bold, design: .rounded))
+                        .foregroundColor(Theme.ink)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+
+                // 数字键盘没有回车键，给一个明确的「确认」把键盘收起来
+                Button {
+                    confirmAmount()
+                } label: {
+                    Text("确认")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundColor(.white)
+                        .padding(.horizontal, 15)
+                        .padding(.vertical, 8)
+                        .background(
+                            amount > 0
+                            ? AnyView(Theme.gradRose)
+                            : AnyView(Theme.muted.opacity(0.45))
+                        )
+                        .clipShape(Capsule())
+                }
+                .buttonStyle(.plain)
             }
 
             HStack(spacing: 8) {
@@ -512,6 +543,15 @@ struct PaymentView: View {
             .navigationTitle("记录收款")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
+                ToolbarItemGroup(placement: .keyboard) {
+                    Spacer()
+                    Button("完成") {
+                        UIApplication.shared.sendAction(
+                            #selector(UIResponder.resignFirstResponder),
+                            to: nil, from: nil, for: nil)
+                    }
+                    .fontWeight(.semibold)
+                }
                 ToolbarItem(placement: .cancellationAction) {
                     Button("取消") { showAddRecord = false }
                 }
@@ -587,5 +627,15 @@ struct PaymentView: View {
     private func flash(_ t: String) {
         withAnimation { toast = t }
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.8) { toast = nil }
+    }
+
+    /// 确认金额：收起键盘并提示
+    private func confirmAmount() {
+        amountFocused = false
+        if amount > 0 {
+            flash("已确认 \(Fmt.money(amount))，二维码已同步")
+        } else {
+            flash("先输入金额")
+        }
     }
 }

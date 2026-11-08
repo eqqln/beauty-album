@@ -30,6 +30,8 @@ struct ClientDetailView: View {
     @State private var tab: DetailTab = .album
     @State private var showEdit = false
     @State private var showDeleteConfirm = false
+    @State private var showCreatedEditor = false
+    @State private var createdDraft = Date()
 
     private var index: Int? { store.index(of: clientID) }
     private var client: Client? { index.map { store.clients[$0] } }
@@ -120,6 +122,16 @@ struct ClientDetailView: View {
         .sheet(isPresented: $showEdit) {
             ClientEditSheet(clientID: clientID)
         }
+        .sheet(isPresented: $showCreatedEditor) {
+            DateTimeEditorSheet(
+                title: "修改建档时间",
+                hint: "建档时间会随备份一起保存，补录老客户时可以直接改成当初添加的日期。",
+                initial: createdDraft
+            ) { d in
+                store.updateClient(clientID) { $0.createdAt = d }
+                store.save()
+            }
+        }
         .alert("删除客户", isPresented: $showDeleteConfirm) {
             Button("取消", role: .cancel) {}
             Button("删除", role: .destructive) {
@@ -188,6 +200,35 @@ struct ClientDetailView: View {
                         .foregroundColor(Theme.roseDeep)
                 }
                 ProgressBar(value: c.progress)
+
+                // 建档（添加）时间，点一下就能改
+                HStack(spacing: 4) {
+                    Button {
+                        createdDraft = c.createdAt
+                        showCreatedEditor = true
+                    } label: {
+                        HStack(spacing: 4) {
+                            Image(systemName: "calendar.badge.clock")
+                                .font(.system(size: 9, weight: .medium))
+                            Text("建档 \(Fmt.dateTime.string(from: c.createdAt))")
+                                .font(.system(size: 10))
+                            Image(systemName: "pencil")
+                                .font(.system(size: 8, weight: .semibold))
+                        }
+                        .foregroundColor(Theme.muted)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+
+                    Spacer(minLength: 0)
+
+                    if let last = c.steps.compactMap({ $0.doneAt }).max() {
+                        Text("最近进展 \(Fmt.dateOnly.string(from: last))")
+                            .font(.system(size: 10))
+                            .foregroundColor(Theme.muted.opacity(0.85))
+                    }
+                }
+                .frame(height: 13)
             }
         }
         .padding(14)
@@ -263,6 +304,7 @@ struct ClientEditSheet: View {
     @State private var name = ""
     @State private var phone = ""
     @State private var note = ""
+    @State private var createdAt = Date()
     @State private var loaded = false
 
     private var isNew: Bool { clientID == nil }
@@ -279,6 +321,14 @@ struct ClientEditSheet: View {
                         .textInputAutocapitalization(.never)
                 } header: {
                     Text("基本信息")
+                }
+
+                Section {
+                    DatePicker("建档时间", selection: $createdAt,
+                               displayedComponents: [.date, .hourAndMinute])
+                        .environment(\.locale, Locale(identifier: "zh_CN"))
+                } footer: {
+                    Text("默认是当前时间。补录老客户时改成当初添加的日期即可，之后在客户详情页也能随时修改。")
                 }
 
                 Section {
@@ -341,6 +391,7 @@ struct ClientEditSheet: View {
             name = c.name
             phone = c.phone
             note = c.note
+            createdAt = c.createdAt
         }
     }
 
@@ -352,11 +403,11 @@ struct ClientEditSheet: View {
                 c.name = n
                 c.phone = p
                 c.note = note
+                c.createdAt = createdAt
             }
             store.save()
         } else {
-            let newID = store.addClient(name: n, phone: p, note: note)
-            _ = newID
+            _ = store.addClient(name: n, phone: p, note: note, createdAt: createdAt)
         }
         dismiss()
     }

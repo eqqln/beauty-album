@@ -20,14 +20,42 @@ struct CompareView: View {
     @State private var toast: String?
     @State private var didInit = false
 
+    // 左右翻页
+    @State private var pageIndex: Int = 0
+    @State private var dragX: CGFloat = 0
+    @State private var isDragging = false
+    @State private var dragOnHandle = false
+
     private var beforePhotos: [PhotoItem] { client.beforePhotos.sorted { $0.createdAt > $1.createdAt } }
     private var afterPhotos: [PhotoItem] { client.afterPhotos.sorted { $0.createdAt > $1.createdAt } }
 
+    /// 一组对比 = 一张使用前 + 一张使用后（都按时间倒序，按下标一一配对）
+    private var pairCount: Int {
+        guard !beforePhotos.isEmpty, !afterPhotos.isEmpty else { return 0 }
+        return max(beforePhotos.count, afterPhotos.count)
+    }
+
+    /// 防止照片被删后下标越界
+    private var safeIndex: Int {
+        guard pairCount > 0 else { return 0 }
+        return min(max(0, pageIndex), pairCount - 1)
+    }
+
+    private func pairBefore(_ i: Int) -> PhotoItem? {
+        guard !beforePhotos.isEmpty else { return nil }
+        return beforePhotos[min(max(0, i), beforePhotos.count - 1)]
+    }
+
+    private func pairAfter(_ i: Int) -> PhotoItem? {
+        guard !afterPhotos.isEmpty else { return nil }
+        return afterPhotos[min(max(0, i), afterPhotos.count - 1)]
+    }
+
     private var beforePhoto: PhotoItem? {
-        beforePhotos.first { $0.id == beforeID } ?? beforePhotos.first
+        beforePhotos.first { $0.id == beforeID } ?? pairBefore(safeIndex)
     }
     private var afterPhoto: PhotoItem? {
-        afterPhotos.first { $0.id == afterID } ?? afterPhotos.first
+        afterPhotos.first { $0.id == afterID } ?? pairAfter(safeIndex)
     }
 
     private func url(_ p: PhotoItem?) -> URL? {
@@ -69,8 +97,29 @@ struct CompareView: View {
     private func initSelection() {
         guard !didInit else { return }
         didInit = true
+        pageIndex = 0
         beforeID = beforePhotos.first?.id
         afterID = afterPhotos.first?.id
+    }
+
+    // MARK: 翻页
+
+    /// 切到第 i 组（同时更新两个选择器的选中项，保证缩略图高亮跟得上）
+    private func applyPage(_ i: Int) {
+        guard pairCount > 0 else { return }
+        let idx = min(max(0, i), pairCount - 1)
+        pageIndex = idx
+        beforeID = pairBefore(idx)?.id
+        afterID = pairAfter(idx)?.id
+    }
+
+    private func step(_ delta: Int) {
+        let target = safeIndex + delta
+        guard target >= 0, target < pairCount else { return }
+        withAnimation(.spring(response: 0.32, dampingFraction: 0.86)) {
+            applyPage(target)
+            dragX = 0
+        }
     }
 
     // MARK: 模式
@@ -80,7 +129,10 @@ struct CompareView: View {
             ForEach(CompareMode.allCases) { m in
                 let active = m == mode
                 Button {
-                    withAnimation(.easeOut(duration: 0.15)) { mode = m }
+                    withAnimation(.easeOut(duration: 0.15)) {
+                        mode = m
+                        dragX = 0
+                    }
                 } label: {
                     Text(m.rawValue)
                         .font(.system(size: 12, weight: active ? .semibold : .regular))
@@ -94,11 +146,9 @@ struct CompareView: View {
                 .buttonStyle(.plain)
             }
             Spacer(minLength: 0)
-            if mode == .slider {
-                Text("拖动分割线")
-                    .font(.system(size: 11))
-                    .foregroundColor(Theme.muted)
-            }
+            Text(mode == .slider ? "拖圆点调对比" : "左右滑动换图")
+                .font(.system(size: 11))
+                .foregroundColor(Theme.muted)
         }
     }
 
@@ -110,70 +160,173 @@ struct CompareView: View {
             let h = geo.size.height
 
             ZStack {
-                if mode == .side {
-                    HStack(spacing: 2) {
-                        halfView(url(beforePhoto), label: store.settings.beforeLabel,
-                                 phase: .before, width: w / 2 - 1, height: h)
-                        halfView(url(afterPhoto), label: store.settings.afterLabel,
-                                 phase: .after, width: w / 2 - 1, height: h)
-                    }
-                } else {
-                    ZStack {
-                        imageFill(url(afterPhoto))
-                            .frame(width: w, height: h)
-                            .clipped()
-
-                        imageFill(url(beforePhoto))
-                            .frame(width: w, height: h)
-                            .clipped()
-                            .mask(
-                                HStack(spacing: 0) {
-                                    Rectangle().frame(width: w * slider)
-                                    Color.clear
-                                }
-                            )
-
-                        // 分割线 + 手柄
-                        ZStack {
-                            Rectangle()
-                                .fill(Color.white)
-                                .frame(width: 2)
-                                .shadow(color: .black.opacity(0.3), radius: 3)
-                            Circle()
-                                .fill(Color.white)
-                                .frame(width: 34, height: 34)
-                                .overlay(
-                                    Image(systemName: "arrow.left.and.right")
-                                        .font(.system(size: 13, weight: .semibold))
-                                        .foregroundColor(Theme.roseDeep)
-                                )
-                                .shadow(color: .black.opacity(0.2), radius: 5)
-                        }
-                        .position(x: w * slider, y: h / 2)
-
-                        VStack {
-                            HStack {
-                                tag(store.settings.beforeLabel, .before)
-                                Spacer()
-                                tag(store.settings.afterLabel, .after)
-                            }
-                            .padding(10)
-                            Spacer()
-                        }
-                    }
-                    .contentShape(Rectangle())
-                    .gesture(
-                        DragGesture(minimumDistance: 0)
-                            .onChanged { v in
-                                slider = min(1, max(0, v.location.x / w))
-                            }
-                    )
-                }
+                // 左 / 中 / 右三页，拖动时相邻一组会跟着进来
+                pageView(-1, w: w, h: h).offset(x: -w + dragX)
+                pageView(0, w: w, h: h).offset(x: dragX)
+                pageView(1, w: w, h: h).offset(x: w + dragX)
             }
             .frame(width: w, height: h)
             .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+            .contentShape(Rectangle())
+            .gesture(panGesture(w: w))
+            .overlay(alignment: .bottom) { pageBadge }
         }
         .aspectRatio(0.82, contentMode: .fit)
+    }
+
+    /// 单页：offset = -1 上一组 / 0 当前 / 1 下一组
+    @ViewBuilder
+    private func pageView(_ offset: Int, w: CGFloat, h: CGFloat) -> some View {
+        let idx = safeIndex + offset
+        let inRange = idx >= 0 && idx < pairCount
+        let b = inRange ? (offset == 0 ? beforePhoto : pairBefore(idx)) : nil
+        let a = inRange ? (offset == 0 ? afterPhoto : pairAfter(idx)) : nil
+
+        if inRange, let b, let a {
+            if mode == .side {
+                HStack(spacing: 2) {
+                    halfView(url(b), label: store.settings.beforeLabel,
+                             phase: .before, width: w / 2 - 1, height: h)
+                    halfView(url(a), label: store.settings.afterLabel,
+                             phase: .after, width: w / 2 - 1, height: h)
+                }
+                .frame(width: w, height: h)
+            } else {
+                sliderPage(url(b), url(a), w: w, h: h)
+            }
+        } else {
+            Color.black.frame(width: w, height: h)
+        }
+    }
+
+    /// 滑块页：使用前盖在使用后上面，用 mask 按 slider 位置裁开
+    private func sliderPage(_ before: URL?, _ after: URL?, w: CGFloat, h: CGFloat) -> some View {
+        ZStack {
+            imageFill(after)
+                .frame(width: w, height: h)
+                .clipped()
+
+            imageFill(before)
+                .frame(width: w, height: h)
+                .clipped()
+                .mask(alignment: .leading) {
+                    Rectangle().frame(width: max(0, w * slider))
+                }
+
+            // 分割线 + 手柄
+            ZStack {
+                Rectangle()
+                    .fill(Color.white)
+                    .frame(width: 2)
+                    .shadow(color: .black.opacity(0.3), radius: 3)
+                Circle()
+                    .fill(Color.white)
+                    .frame(width: 34, height: 34)
+                    .overlay(
+                        Image(systemName: "arrow.left.and.right")
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundColor(Theme.roseDeep)
+                    )
+                    .shadow(color: .black.opacity(0.2), radius: 5)
+            }
+            .position(x: w * slider, y: h / 2)
+
+            VStack {
+                HStack {
+                    tag(store.settings.beforeLabel, .before)
+                    Spacer()
+                    tag(store.settings.afterLabel, .after)
+                }
+                .padding(10)
+                Spacer()
+            }
+        }
+        .frame(width: w, height: h)
+    }
+
+    /// 手势：拖圆点 = 调对比；其余横向拖动 = 翻页
+    private func panGesture(w: CGFloat) -> some Gesture {
+        DragGesture(minimumDistance: 0)
+            .onChanged { v in
+                if !isDragging {
+                    isDragging = true
+                    // 只有从手柄附近按下才算「调对比」，避免和翻页抢手势
+                    dragOnHandle = mode == .slider && abs(v.startLocation.x - w * slider) < 44
+                }
+                if dragOnHandle {
+                    slider = min(1, max(0, v.location.x / w))
+                } else {
+                    var x = v.translation.width
+                    // 到头了给点阻尼，手感上知道没得翻了
+                    if (safeIndex == 0 && x > 0) || (safeIndex == pairCount - 1 && x < 0) {
+                        x *= 0.28
+                    }
+                    dragX = x
+                }
+            }
+            .onEnded { v in
+                let wasHandle = dragOnHandle
+                isDragging = false
+                dragOnHandle = false
+                if wasHandle { return }
+
+                let dx = v.translation.width
+                let projected = v.predictedEndTranslation.width
+                var target = safeIndex
+                if projected < -50 || dx < -w * 0.22 {
+                    target = safeIndex + 1
+                } else if projected > 50 || dx > w * 0.22 {
+                    target = safeIndex - 1
+                }
+                target = min(max(0, target), max(0, pairCount - 1))
+
+                withAnimation(.spring(response: 0.32, dampingFraction: 0.86)) {
+                    if target != safeIndex { applyPage(target) }
+                    dragX = 0
+                }
+            }
+    }
+
+    /// 底部页码条：‹ 3 / 12 ›
+    @ViewBuilder
+    private var pageBadge: some View {
+        if pairCount > 1 {
+            HStack(spacing: 10) {
+                Button {
+                    step(-1)
+                } label: {
+                    Image(systemName: "chevron.left")
+                        .font(.system(size: 12, weight: .bold))
+                        .foregroundColor(.white.opacity(safeIndex > 0 ? 1 : 0.3))
+                        .frame(width: 26, height: 26)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .disabled(safeIndex == 0)
+
+                Text("\(safeIndex + 1) / \(pairCount)")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundColor(.white)
+                    .monospacedDigit()
+
+                Button {
+                    step(1)
+                } label: {
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 12, weight: .bold))
+                        .foregroundColor(.white.opacity(safeIndex < pairCount - 1 ? 1 : 0.3))
+                        .frame(width: 26, height: 26)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .disabled(safeIndex == pairCount - 1)
+            }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 3)
+            .background(Color.black.opacity(0.5))
+            .clipShape(Capsule())
+            .padding(.bottom, 10)
+        }
     }
 
     private func halfView(_ u: URL?, label: String, phase: PhotoPhase,
