@@ -130,7 +130,7 @@ struct StepsView: View {
     private var progressCard: some View {
         VStack(spacing: 12) {
             HStack(alignment: .top) {
-                VStack(alignment: .leading, spacing: 5) {
+                VStack(alignment: .leading, spacing: 6) {
                     Text(allDone ? "全部完成" : "当前环节")
                         .font(.system(size: 11))
                         .foregroundColor(Theme.muted)
@@ -140,14 +140,66 @@ struct StepsView: View {
                             .font(.system(size: 18, weight: .semibold))
                             .foregroundColor(Theme.ink)
                     } else {
-                        HStack(alignment: .firstTextBaseline, spacing: 6) {
-                            Text("第 \(client.currentStepNumber) 步")
-                                .font(.system(size: 20, weight: .bold))
-                                .foregroundColor(Theme.roseDeep)
-                            Text("共 \(client.steps.count) 步")
-                                .font(.system(size: 11))
-                                .foregroundColor(Theme.muted)
+                        // 步数可以直接改：左右箭头逐步走，点中间数字跳到任意一步
+                        HStack(spacing: 8) {
+                            Button {
+                                stepBack()
+                            } label: {
+                                Image(systemName: "chevron.left")
+                                    .font(.system(size: 12, weight: .bold))
+                                    .foregroundColor(donePrefix == 0 ? Theme.muted.opacity(0.4) : Theme.roseDeep)
+                                    .frame(width: 28, height: 28)
+                                    .background(Theme.roseLight)
+                                    .clipShape(Circle())
+                            }
+                            .buttonStyle(.plain)
+                            .disabled(donePrefix == 0)
+
+                            Menu {
+                                ForEach(Array(client.steps.enumerated()), id: \.element.id) { idx, st in
+                                    Button {
+                                        jump(to: idx)
+                                    } label: {
+                                        if idx < donePrefix {
+                                            Label("第 \(idx + 1) 步 · \(st.title)（已完成）",
+                                                  systemImage: "checkmark.circle")
+                                        } else if idx == donePrefix {
+                                            Label("第 \(idx + 1) 步 · \(st.title)（当前）",
+                                                  systemImage: "smallcircle.filled.circle")
+                                        } else {
+                                            Label("第 \(idx + 1) 步 · \(st.title)",
+                                                  systemImage: "circle")
+                                        }
+                                    }
+                                }
+                            } label: {
+                                HStack(spacing: 3) {
+                                    Text("第 \(client.currentStepNumber) 步")
+                                        .font(.system(size: 20, weight: .bold))
+                                        .foregroundColor(Theme.roseDeep)
+                                    Image(systemName: "chevron.down")
+                                        .font(.system(size: 10, weight: .bold))
+                                        .foregroundColor(Theme.roseDeep.opacity(0.7))
+                                }
+                            }
+
+                            Button {
+                                completeCurrent()
+                            } label: {
+                                Image(systemName: "chevron.right")
+                                    .font(.system(size: 12, weight: .bold))
+                                    .foregroundColor(.white)
+                                    .frame(width: 28, height: 28)
+                                    .background(Theme.rose)
+                                    .clipShape(Circle())
+                            }
+                            .buttonStyle(.plain)
                         }
+
+                        Text("共 \(client.steps.count) 步 · 点数字可跳到任意一步")
+                            .font(.system(size: 10))
+                            .foregroundColor(Theme.muted)
+
                         if !client.steps.isEmpty {
                             Text(client.steps[min(client.currentStepNumber - 1,
                                                   client.steps.count - 1)].title)
@@ -393,19 +445,12 @@ struct StepsView: View {
 
     // MARK: 操作
 
-    /// 点圆圈：已完成→撤销；当前→完成；后面的→快进
+    /// 点圆圈：当前这一步→完成；其它→跳过去（后面确认，前面撤销）
     private func tapStep(index: Int) {
-        if index < donePrefix {
-            if donePrefix - index > 1 {
-                undoIndex = index
-            } else {
-                undoIndex = index
-                commitUndo()
-            }
-        } else if index == donePrefix {
+        if index == donePrefix {
             completeCurrent()
         } else {
-            skipIndex = index
+            jump(to: index)
         }
     }
 
@@ -414,6 +459,24 @@ struct StepsView: View {
         client.steps[i].done = true
         client.steps[i].doneAt = Date()
         store.save()
+    }
+
+    /// 回退一步：上一步变回未完成
+    private func stepBack() {
+        guard donePrefix > 0 else { return }
+        jump(to: donePrefix - 1)
+    }
+
+    /// 跳到第 index 步，让它成为当前环节。
+    /// 往前跳 = 撤销后面的勾；往后跳 = 把中间的补成已完成。
+    private func jump(to index: Int) {
+        guard index >= 0, index < client.steps.count else { return }
+        if index < donePrefix {
+            undoIndex = index
+            if donePrefix - index <= 1 { commitUndo() }
+        } else if index > donePrefix {
+            skipIndex = index
+        }
     }
 
     private func commitSkip() {

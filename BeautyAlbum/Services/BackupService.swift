@@ -161,7 +161,13 @@ enum BackupService {
             write(appointmentsInfo(appointments), to: root.appendingPathComponent("预约记录.txt"))
         }
 
-        // 8. 打包
+        // 8. 备份说明与客户总览（打开压缩包第一眼就能看懂里面有什么）
+        write(readmeInfo(clients: clients, settings: settings, photoCount: photoCount,
+                         teachers: teachers, appointments: appointments, products: products),
+              to: root.appendingPathComponent("备份说明.txt"))
+        write(overviewInfo(clients), to: root.appendingPathComponent("客户总览.txt"))
+
+        // 9. 打包
         let zipURL = exportsURL.appendingPathComponent(rootName + ".zip")
         let writer = try ZipWriter(url: zipURL)
         try writer.addDirectory(rootName)
@@ -311,6 +317,69 @@ enum BackupService {
             s += "\n"
         }
         return s
+    }
+
+    /// 备份包根目录的说明文件
+    private static func readmeInfo(clients: [Client], settings: AppSettings, photoCount: Int,
+                                   teachers: [Teacher], appointments: [Appointment],
+                                   products: [Product]) -> String {
+        """
+        【店铺】\(settings.shopName)
+        【导出时间】\(Fmt.dateTime.string(from: Date()))
+        【数据量】客户 \(clients.count) 位 · 照片 \(photoCount) 张 · 老师 \(teachers.count) 位 · 预约 \(appointments.count) 条 · 产品 \(products.count) 个
+        【照片阶段叫法】\(settings.beforeLabel) / \(settings.afterLabel)
+
+        —— 每位客户一个文件夹，里面是 ——
+        \(settings.beforeLabel)/          这一阶段的原始照片
+        \(settings.afterLabel)/           这一阶段的原始照片（前后对比图就是用这两组照片生成的）
+        客户信息.txt      姓名、电话、建档时间、账单、备注、产品领取
+        流程进度.txt      每一步做没做、什么时候做的、环节备注
+        跟进记录.txt      每次沟通记录
+        收款记录.txt      每笔收款的时间、金额、方式
+
+        —— 根目录还有 ——
+        客户总览.txt      所有客户一行一个，方便快速核对
+        老师/             老师照片和资料
+        产品/             产品图片、规格、价格、库存、使用步骤
+        预约记录.txt      全部预约
+        收款码/           微信、支付宝收款码
+        data.json         完整数据，App 内「从备份恢复」靠这个文件重建全部内容
+
+        —— 怎么恢复 ——
+        App 里：设置 → 备份与恢复 → 从备份恢复 → 选这个 zip
+        选「覆盖恢复」清空后还原，选「合并恢复」保留现有客户再追加
+        """
+    }
+
+    /// 所有客户一行一个，方便对账
+    private static func overviewInfo(_ clients: [Client]) -> String {
+        var s = "客户总览（共 \(clients.count) 位）\n\n"
+        s += "序号  姓名          电话              照片  进度      应收      已付      未付\n"
+        for (i, c) in clients.enumerated() {
+            let name = pad(c.name.isEmpty ? "未命名" : c.name, 12)
+            let phone = pad(c.phone.isEmpty ? "未填" : c.phone, 16)
+            let photos = pad("\(c.photos.count) 张", 5)
+            let step = pad("\(c.sequentialDoneCount)/\(c.steps.count) 步", 9)
+            let quoted = pad(c.quotedPrice > 0 ? Fmt.money(c.quotedPrice) : "-", 9)
+            let paid = pad(Fmt.money(c.paidAmount), 9)
+            let unpaid = c.unpaidAmount > 0 ? Fmt.money(c.unpaidAmount) : "-"
+            s += "\(pad("\(i + 1)", 5))\(name)\(phone)\(photos)\(step)\(quoted)\(paid)\(unpaid)\n"
+        }
+        let totalQuoted = clients.reduce(0) { $0 + $1.quotedPrice }
+        let totalPaid = clients.reduce(0) { $0 + $1.paidAmount }
+        let totalUnpaid = clients.reduce(0) { $0 + $1.unpaidAmount }
+        s += "\n合计：应收 \(Fmt.money(totalQuoted)) · 已付 \(Fmt.money(totalPaid)) · 未收 \(Fmt.money(totalUnpaid))\n"
+        return s
+    }
+
+    /// 按显示宽度补空格（中文按两个字符算）
+    private static func pad(_ text: String, _ width: Int) -> String {
+        var w = 0
+        for ch in text.unicodeScalars {
+            w += ch.value > 0x2E80 ? 2 : 1
+        }
+        if w >= width { return text + "  " }
+        return text + String(repeating: " ", count: width - w)
     }
 
     private static func stepsInfo(_ c: Client, settings: AppSettings) -> String {
