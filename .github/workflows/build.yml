@@ -1,0 +1,87 @@
+name: Build IPA
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, master]
+    paths-ignore:
+      - "**.md"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: macos-14
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Show Xcode version
+        run: xcodebuild -version
+
+      - name: Install XcodeGen
+        run: |
+          brew update >/dev/null 2>&1 || true
+          brew install xcodegen
+
+      - name: Generate Xcode project
+        run: xcodegen generate --spec project.yml
+
+      - name: Build unsigned app
+        run: |
+          set -o pipefail
+          xcodebuild \
+            -project BeautyAlbum.xcodeproj \
+            -scheme BeautyAlbum \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination "generic/platform=iOS" \
+            -derivedDataPath build \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGN_ENTITLEMENTS="" \
+            build
+
+      - name: Package into IPA
+        run: |
+          APP_PATH="build/Build/Products/Release-iphoneos/BeautyAlbum.app"
+          if [ ! -d "$APP_PATH" ]; then
+            echo "构建产物不存在，列出目录："
+            ls -R build/Build/Products || true
+            exit 1
+          fi
+          rm -rf Payload BeautyAlbum.ipa
+          mkdir -p Payload
+          cp -R "$APP_PATH" Payload/
+          zip -qry BeautyAlbum.ipa Payload
+          ls -lh BeautyAlbum.ipa
+          echo "IPA_SIZE=$(du -h BeautyAlbum.ipa | cut -f1)" >> $GITHUB_ENV
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: BeautyAlbum-ipa
+          path: BeautyAlbum.ipa
+          retention-days: 90
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v1.0.${{ github.run_number }}
+          name: 美颜相册 v1.0.${{ github.run_number }}
+          body: |
+            未签名 IPA，需自行签名后安装。
+
+            安装方式：
+            - Sideloadly / AltStore / SideStore（需 Apple ID）
+            - TrollStore（支持的系统可直接安装）
+            - 自有开发者证书重签
+
+            构建号：${{ github.run_number }}
+          files: BeautyAlbum.ipa
+          draft: false
+          prerelease: false
