@@ -27,6 +27,13 @@ jobs:
           brew update >/dev/null 2>&1 || true
           brew install xcodegen
 
+      - name: Read app version
+        id: ver
+        run: |
+          V=$(grep -m1 'MARKETING_VERSION:' project.yml | sed 's/.*"\(.*\)".*/\1/')
+          echo "version=$V" >> $GITHUB_OUTPUT
+          echo "本次构建版本：$V"
+
       - name: Generate Xcode project
         run: xcodegen generate --spec project.yml
 
@@ -71,12 +78,21 @@ jobs:
       - name: Publish release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v1.0.${{ github.run_number }}
-          name: 美颜相册 v1.0.${{ github.run_number }}
+          tag_name: v${{ steps.ver.outputs.version }}-${{ github.run_number }}
+          name: 美颜相册 v${{ steps.ver.outputs.version }} (build ${{ github.run_number }})
           body: |
+            ## 美颜相册 v${{ steps.ver.outputs.version }}
+
             未签名 IPA，需自行签名后安装。
 
-            安装方式：
+            ### 本次新增
+            - 注册系统与登录系统（手机号验证码注册、密码登录）
+            - 套餐系统：浏览套餐、一键开通，后台可改内容与价格
+            - 充值卡：后台批量生成卡号卡密，App 内输入卡号卡密直接充值
+            - 钱包：余额、累计充值、积分，充值 / 消费 / 调整完整流水
+            - 与后台管理端全量联动（会员、客户、相册、对比图、收款、导师、产品、代理）
+
+            ### 安装方式
             - Sideloadly / AltStore / SideStore（需 Apple ID）
             - TrollStore（支持的系统可直接安装）
             - 自有开发者证书重签

@@ -203,6 +203,10 @@ struct SettingsView: View {
                 featureLabel("代理商", "person.3.fill", "代理档案、拿货、上下级")
             }
 
+            Toggle(isOn: $store.settings.features.account) {
+                featureLabel("会员账号", "person.crop.circle.fill", "注册登录、套餐开通")
+            }
+
             if store.settings.features.agents {
                 Toggle(isOn: $store.settings.features.agentParent) {
                     subFeatureLabel("　父级关系", "上级与下级树")
@@ -429,6 +433,42 @@ struct SettingsView: View {
             Text("默认流程模板")
         } footer: {
             Text("新建客户时自动套用。已建档的客户不受影响，可在客户「流程」页单独调整。")
+        }
+    }
+
+    // MARK: 服务器
+
+    private var serverSection: some View {
+        Section {
+            HStack {
+                Label("后台地址", systemImage: "server.rack")
+                Spacer()
+                Text(CloudAPI.shared.baseURL.replacingOccurrences(of: "https://", with: ""))
+                    .font(.system(size: 12))
+                    .foregroundColor(Theme.muted)
+                    .lineLimit(1)
+            }
+            TextField("https://meiyan.shengka.net", text: Binding(
+                get: { CloudAPI.shared.baseURL },
+                set: { CloudAPI.shared.baseURL = $0 }
+            ))
+            .font(.system(size: 13))
+            .textInputAutocapitalization(.never)
+            .autocorrectionDisabled()
+            .keyboardType(.URL)
+
+            HStack {
+                Label("登录状态", systemImage: "person.badge.key")
+                Spacer()
+                let tk = UserDefaults.standard.string(forKey: "cloud.token") ?? ""
+                Text(tk.isEmpty ? "未登录" : "已登录")
+                    .font(.system(size: 12))
+                    .foregroundColor(tk.isEmpty ? Theme.muted : Theme.roseDeep)
+            }
+        } header: {
+            Text("服务器与账号")
+        } footer: {
+            Text("会员注册、登录和套餐数据保存在这个地址对应的后台。在「我的」标签页里可以注册或登录。")
         }
     }
 

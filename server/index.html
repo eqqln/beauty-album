@@ -1,0 +1,375 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#120d10">
+<meta name="description" content="美颜相册 iOS 安装包下载与安装说明">
+<title>美颜相册 · 下载与安装</title>
+<link rel="icon" href="/dl/icon-57.png">
+<style>
+  :root{
+    --rose:#e07b95; --rose2:#c94a6b; --soft:#a99aa1; --dim:#8b7d83;
+    --card:rgba(255,255,255,.055); --line:rgba(255,255,255,.11);
+  }
+  *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+  html,body{margin:0;padding:0}
+  body{
+    font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif;
+    background:#100b0e;color:#fff;min-height:100vh;position:relative;overflow-x:hidden;
+    -webkit-font-smoothing:antialiased;
+  }
+  body::before{
+    content:"";position:fixed;inset:-30% -10% auto -10%;height:78vh;pointer-events:none;z-index:0;
+    background:
+      radial-gradient(58% 58% at 18% 16%, rgba(224,123,149,.52), transparent 62%),
+      radial-gradient(48% 48% at 86% 8%, rgba(150,90,200,.34), transparent 62%),
+      radial-gradient(52% 52% at 52% 82%, rgba(201,74,107,.26), transparent 66%);
+    filter:blur(34px);
+  }
+  body::after{
+    content:"";position:fixed;inset:0;pointer-events:none;z-index:0;opacity:.35;
+    background-image:radial-gradient(rgba(255,255,255,.10) 1px, transparent 1px);
+    background-size:26px 26px;
+    mask-image:radial-gradient(70% 60% at 50% 30%, #000 0%, transparent 100%);
+    -webkit-mask-image:radial-gradient(70% 60% at 50% 30%, #000 0%, transparent 100%);
+  }
+  .page{position:relative;z-index:1}
+
+  /* ---------- 顶栏 ---------- */
+  .nav{
+    max-width:960px;margin:0 auto;padding:20px 22px 0;
+    display:flex;align-items:center;justify-content:space-between;gap:12px;
+  }
+  .nav-brand{display:flex;align-items:center;gap:10px;font-weight:800;letter-spacing:.4px;font-size:15px}
+  .nav-brand .dot-logo{
+    width:32px;height:32px;border-radius:10px;display:flex;align-items:center;justify-content:center;
+    background:linear-gradient(140deg,#ec8ba6,#c34b6c);font-size:15px;font-weight:800;
+    box-shadow:0 6px 16px rgba(195,75,108,.4);
+  }
+  .nav a.admin-link{
+    font-size:12.5px;color:#f0dde4;text-decoration:none;padding:8px 14px;border-radius:20px;
+    background:rgba(255,255,255,.06);border:1px solid var(--line);transition:.16s;white-space:nowrap;
+  }
+  .nav a.admin-link:hover{background:rgba(255,255,255,.12);border-color:rgba(224,123,149,.4)}
+
+  .wrap{max-width:960px;margin:0 auto;padding:0 22px 64px}
+
+  /* ---------- Hero ---------- */
+  .hero{
+    display:grid;grid-template-columns:1fr 340px;gap:36px;align-items:center;
+    padding:52px 0 8px;
+  }
+  .hero-left{min-width:0}
+  .icon{
+    width:104px;height:104px;border-radius:27px;position:relative;overflow:hidden;
+    background:linear-gradient(145deg,#f3a6bb,#c94a6b 58%,#a93b57);
+    display:flex;align-items:center;justify-content:center;
+    font-size:46px;font-weight:800;letter-spacing:2px;
+    box-shadow:0 24px 54px rgba(201,74,107,.46), inset 0 1px 0 rgba(255,255,255,.42);
+  }
+  .icon::after{
+    content:"";position:absolute;inset:0;
+    background:linear-gradient(160deg,rgba(255,255,255,.36),transparent 46%);
+  }
+  h1.app-name{font-size:32px;font-weight:800;margin:20px 0 0;letter-spacing:.6px;line-height:1.15}
+  .tagline{color:var(--soft);font-size:14px;margin:10px 0 0;line-height:1.7;max-width:440px}
+  .pills{display:flex;gap:8px;flex-wrap:wrap;margin-top:18px}
+  .pill{
+    font-size:11.5px;padding:6px 12px;border-radius:20px;color:#e9dfe3;
+    background:var(--card);border:1px solid var(--line);
+  }
+  .pill b{color:#fff;font-weight:700}
+
+  /* ---------- 下载卡片 ---------- */
+  .dl-card{
+    background:linear-gradient(180deg,rgba(255,255,255,.10),rgba(255,255,255,.045));
+    border:1px solid rgba(255,255,255,.14);border-radius:24px;padding:24px 22px;
+    backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);
+    box-shadow:0 26px 60px rgba(0,0,0,.34);
+  }
+  .dl-card h2{font-size:15px;margin:0 0 4px;font-weight:800;letter-spacing:.3px}
+  .dl-card .dl-note{font-size:11.5px;color:var(--dim);margin:0 0 18px;line-height:1.6}
+  .actions{display:flex;flex-direction:column;gap:10px}
+  .btn{
+    display:flex;align-items:center;justify-content:center;gap:9px;
+    padding:15px 18px;border-radius:15px;font-size:15.5px;font-weight:700;
+    text-decoration:none;border:0;cursor:pointer;transition:.16s;text-align:center;
+  }
+  .btn:active{transform:scale(.985)}
+  .btn-main{
+    background:linear-gradient(135deg,#f296ad,#c94a6b);
+    color:#fff;box-shadow:0 14px 34px rgba(201,74,107,.45);
+  }
+  .btn-main:hover{box-shadow:0 18px 42px rgba(201,74,107,.55)}
+  .btn-ghost{
+    background:rgba(255,255,255,.07);border:1px solid var(--line);color:#f4eaee;
+    font-size:13.5px;font-weight:600;padding:13px 18px;
+  }
+  .btn-ghost:hover{background:rgba(255,255,255,.13)}
+  .dl-meta{
+    display:flex;justify-content:space-between;gap:8px;margin-top:16px;
+    padding-top:14px;border-top:1px solid rgba(255,255,255,.09);
+    font-size:11px;color:var(--dim);
+  }
+  .dl-meta span b{display:block;color:#e9dfe3;font-size:12.5px;font-weight:700;margin-top:2px}
+
+  /* ---------- 通用卡片 ---------- */
+  .section-title{
+    display:flex;align-items:center;gap:10px;margin:44px 0 16px;
+    font-size:16px;font-weight:800;letter-spacing:.3px;
+  }
+  .section-title::before{
+    content:"";width:4px;height:17px;border-radius:3px;
+    background:linear-gradient(180deg,#f0a0b6,#c94a6b);
+  }
+  .section-title small{font-weight:500;color:var(--dim);font-size:11.5px;letter-spacing:0}
+
+  .grid{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+  .card{
+    background:var(--card);border:1px solid var(--line);border-radius:19px;
+    padding:20px;backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);
+  }
+  .card h3{
+    font-size:13.5px;margin:0 0 14px;font-weight:700;
+    display:flex;align-items:center;gap:8px;letter-spacing:.2px;
+  }
+  .card h3 .tag{
+    font-size:10px;font-weight:700;padding:2px 8px;border-radius:8px;
+    background:rgba(224,123,149,.18);color:#f3b6c8;border:1px solid rgba(224,123,149,.3);
+  }
+  .card h3 .tag.grey{background:rgba(255,255,255,.07);color:#cfc2c8;border-color:var(--line)}
+
+  .steps{display:flex;flex-direction:column;gap:13px}
+  .step{display:flex;gap:11px;align-items:flex-start}
+  .step .n{
+    flex:0 0 auto;width:23px;height:23px;border-radius:50%;margin-top:1px;
+    background:rgba(224,123,149,.16);color:#f2adc0;border:1px solid rgba(224,123,149,.34);
+    display:flex;align-items:center;justify-content:center;font-size:11.5px;font-weight:700;
+  }
+  .step .t{font-size:12.5px;line-height:1.68;color:#ded2d7}
+  .step .t b{color:#fff;font-weight:700}
+  .step .t em{font-style:normal;color:#f3b6c8}
+
+  .feats{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+  .feat{display:flex;gap:9px;align-items:flex-start;font-size:12.5px;color:#ded2d7;line-height:1.55}
+  .feat .i{font-size:15px;line-height:1.25;flex:0 0 auto}
+
+  .qr-row{display:flex;gap:18px;align-items:center}
+  .qr{
+    width:120px;height:120px;border-radius:15px;background:#fff;padding:7px;flex:0 0 auto;
+    box-shadow:0 12px 30px rgba(0,0,0,.28);
+  }
+  .qr img{width:100%;height:100%;display:block;border-radius:9px}
+  .qr-text{font-size:12.5px;color:#ded2d7;line-height:1.8}
+  .qr-text code{
+    font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11.5px;
+    background:rgba(255,255,255,.08);padding:2px 7px;border-radius:6px;color:#f3b6c8;
+  }
+
+  .faq{display:flex;flex-direction:column;gap:0}
+  .faq details{border-bottom:1px solid rgba(255,255,255,.08);padding:13px 0}
+  .faq details:last-child{border-bottom:0;padding-bottom:0}
+  .faq summary{
+    cursor:pointer;font-size:12.5px;font-weight:600;color:#f0e5e9;list-style:none;
+    display:flex;align-items:center;gap:8px;line-height:1.5;
+  }
+  .faq summary::-webkit-details-marker{display:none}
+  .faq summary::before{content:"＋";color:var(--rose);font-weight:700;font-size:13px}
+  .faq details[open] summary::before{content:"－"}
+  .faq p{font-size:12px;color:#c9bcc2;line-height:1.75;margin:9px 0 0 21px}
+
+  .foot{
+    text-align:center;margin-top:46px;padding-top:24px;font-size:12px;color:#7d6f75;line-height:2;
+    border-top:1px solid rgba(255,255,255,.07);
+  }
+  .foot a{color:#e0a3b5;text-decoration:none}
+  .foot a:hover{text-decoration:underline}
+  .foot .sep{color:#4a3f44;margin:0 8px}
+
+  @media (max-width:820px){
+    .hero{grid-template-columns:1fr;gap:28px;padding:34px 0 4px}
+    .icon{width:88px;height:88px;border-radius:23px;font-size:39px}
+    h1.app-name{font-size:26px}
+    .grid{grid-template-columns:1fr}
+    .wrap{padding:0 18px 52px}
+    .nav{padding:16px 18px 0}
+  }
+  @media (max-width:420px){
+    .feats{grid-template-columns:1fr}
+    .qr-row{flex-direction:column;align-items:flex-start;gap:14px}
+    .dl-card{padding:20px 17px}
+    .card{padding:17px}
+  }
+</style>
+</head>
+<body>
+<div class="page">
+
+  <nav class="nav">
+    <div class="nav-brand">
+      <span class="dot-logo">美</span>
+      <span id="navShop">美颜相册</span>
+    </div>
+    <a class="admin-link" href="/admin/">管理后台 →</a>
+  </nav>
+
+  <div class="wrap">
+
+    <!-- Hero + 下载卡 -->
+    <section class="hero">
+      <div class="hero-left">
+        <div class="icon">美</div>
+        <h1 class="app-name">美颜相册</h1>
+        <p class="tagline">美容院客户相册 · 使用前后对比 · 套餐开通与充值。<br>给每位客户一个专属相册，效果看得见。</p>
+        <div class="pills">
+          <span class="pill">版本 <b id="ver">1.1.0</b></span>
+          <span class="pill">大小 <b id="size">—</b></span>
+          <span class="pill">iOS 16.0 及以上</span>
+          <span class="pill">iPhone / iPad</span>
+        </div>
+      </div>
+
+      <div class="dl-card">
+        <h2>下载安装</h2>
+        <p class="dl-note" id="hintText">请用 iPhone 自带的 Safari 打开本页再安装</p>
+        <div class="actions">
+          <a class="btn btn-main" id="otaBtn"
+             href="itms-services://?action=download-manifest&url=https://meiyan.shengka.net/manifest.plist">
+             立即安装到 iPhone
+          </a>
+          <a class="btn btn-ghost" id="dlBtn" href="/dl/BeautyAlbum.ipa" download>
+             下载安装包（.ipa 文件）
+          </a>
+        </div>
+        <div class="dl-meta">
+          <span>当前版本<b id="ver2">1.1.0</b></span>
+          <span>包大小<b id="size2">—</b></span>
+          <span>更新日期<b id="upd">—</b></span>
+        </div>
+      </div>
+    </section>
+
+    <!-- 安装说明 -->
+    <h2 class="section-title">安装说明 <small>照这个顺序来，一次装好</small></h2>
+
+    <div class="grid">
+      <div class="card">
+        <h3>方式一 · 直接安装 <span class="tag">最快</span></h3>
+        <div class="steps">
+          <div class="step"><div class="n">1</div><div class="t">用 <b>Safari</b> 打开本页。在微信里打开无法安装，请点右上角「<b>在浏览器中打开</b>」。</div></div>
+          <div class="step"><div class="n">2</div><div class="t">点右侧「<em>立即安装到 iPhone</em>」，弹窗里选「<b>安装</b>」。</div></div>
+          <div class="step"><div class="n">3</div><div class="t">回到桌面等待图标下载完成，图标出现后再点开。</div></div>
+          <div class="step"><div class="n">4</div><div class="t">若提示「<b>未受信任的开发者</b>」，去 <b>设置 → 通用 → VPN与设备管理</b> 里点信任该证书。</div></div>
+        </div>
+      </div>
+
+      <div class="card">
+        <h3>方式二 · 电脑自签安装 <span class="tag grey">未签名包</span></h3>
+        <div class="steps">
+          <div class="step"><div class="n">1</div><div class="t">先点「<em>下载安装包（.ipa 文件）</em>」，把包存到电脑。</div></div>
+          <div class="step"><div class="n">2</div><div class="t">电脑装 <b>Sideloadly</b> 或 <b>AltStore</b>，用数据线连上 iPhone。</div></div>
+          <div class="step"><div class="n">3</div><div class="t">把你的 <b>Apple ID</b> 填进去，选择刚下载的 .ipa，点开始签名安装。</div></div>
+          <div class="step"><div class="n">4</div><div class="t">系统支持的话，<b>TrollStore</b> 可以直接安装，不需要电脑。</div></div>
+        </div>
+      </div>
+
+      <div class="card">
+        <h3>手机扫码打开本页</h3>
+        <div class="qr-row">
+          <div class="qr"><img id="qrImg" alt="扫码下载"
+            src="https://api.qrserver.com/v1/create-qr-code/?size=240x240&margin=0&data=https%3A%2F%2Fmeiyan.shengka.net%2F"
+            onerror="this.parentNode.style.display='none'"></div>
+          <div class="qr-text">
+            用手机相机扫左边二维码，<br>直接在手机上打开下载页。<br>
+            地址：<code>meiyan.shengka.net</code>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <h3>常见问题</h3>
+        <div class="faq">
+          <details>
+            <summary>点了安装没反应 / 转圈后消失</summary>
+            <p>多半是在微信、QQ 里打开的。请复制网址到 <b>Safari</b> 里重新打开。仍不行就长按「立即安装」按钮，选「在新标签页打开」。</p>
+          </details>
+          <details>
+            <summary>提示「无法安装此 App」</summary>
+            <p>说明这个包还没有企业签名。请改用<b>方式二</b>，用电脑自签安装；或者联系管理员换成已签名的包。</p>
+          </details>
+          <details>
+            <summary>打开闪退</summary>
+            <p>先确认系统是 <b>iOS 16.0 以上</b>。如果刚装完就闪退，删掉重装一次；自签的包证书过期也会闪退，重新签一次即可。</p>
+          </details>
+          <details>
+            <summary>怎么登录 App</summary>
+            <p>用手机号收验证码注册，然后设置密码登录。套餐、充值卡都在 App 里「我的」页面操作，充值卡号卡密由店铺后台生成后发给你。</p>
+          </details>
+        </div>
+      </div>
+    </div>
+
+    <!-- 功能 -->
+    <h2 class="section-title">App 里有什么</h2>
+    <div class="card">
+      <div class="feats">
+        <div class="feat"><span class="i">👤</span><span>会员注册登录，手机号验证码</span></div>
+        <div class="feat"><span class="i">🎁</span><span>套餐浏览与一键开通</span></div>
+        <div class="feat"><span class="i">💳</span><span>充值卡在线充值，余额与积分</span></div>
+        <div class="feat"><span class="i">💁</span><span>一人一相册，客户档案</span></div>
+        <div class="feat"><span class="i">🖼</span><span>使用前 / 使用后照片管理</span></div>
+        <div class="feat"><span class="i">↔️</span><span>前后对比，可左右滑动</span></div>
+        <div class="feat"><span class="i">📋</span><span>六步流程，打勾推进</span></div>
+        <div class="feat"><span class="i">💰</span><span>收款二维码与欠款记录</span></div>
+        <div class="feat"><span class="i">🤝</span><span>导师、产品、代理管理</span></div>
+        <div class="feat"><span class="i">💾</span><span>整站备份与自动备份</span></div>
+        <div class="feat"><span class="i">🔒</span><span>密码锁与后台开关</span></div>
+        <div class="feat"><span class="i">✉️</span><span>短信通道与发送记录</span></div>
+      </div>
+    </div>
+
+    <div class="foot">
+      店铺管理与配置请前往 <a href="/admin/">管理后台</a><span class="sep">·</span><a href="#top">回到顶部</a><br>
+      <span id="shopFoot">美颜相册 · 专业皮肤管理</span>
+    </div>
+  </div>
+</div>
+
+<script>
+(function () {
+  var d = null;
+  function setText(id, v) { var e = document.getElementById(id); if (e && v) e.textContent = v; }
+
+  fetch('/meiyan-api/index.php?r=site/info')
+    .then(function (r) { return r.json(); })
+    .then(function (j) {
+      if (!j || !j.ok || !j.data) return;
+      d = j.data;
+      setText('ver', d.app_version);
+      setText('ver2', d.app_version);
+      setText('size', d.ipa_size);
+      setText('size2', d.ipa_size);
+      if (d.shop_name) {
+        setText('navShop', d.shop_name);
+        document.getElementById('shopFoot').textContent =
+          d.shop_name + (d.shop_slogan ? ' · ' + d.shop_slogan : '');
+        document.title = d.shop_name + ' · 下载与安装';
+      }
+      if (d.install_note) setText('hintText', d.install_note);
+      if (d.ipa_mtime) setText('upd', d.ipa_mtime);
+      if (d.ipa_download_url) document.getElementById('dlBtn').href = d.ipa_download_url;
+      if (d.install_url) document.getElementById('otaBtn').href = d.install_url;
+    })
+    .catch(function () {});
+
+  /* 非 iOS 设备提示改下载包 */
+  var ua = navigator.userAgent || '';
+  if (!/iPhone|iPad|iPod/i.test(ua)) {
+    var t = document.getElementById('hintText');
+    if (t) t.textContent = '当前不是 iPhone / iPad，点下方按钮直接下载安装包';
+  }
+})();
+</script>
+</body>
+</html>

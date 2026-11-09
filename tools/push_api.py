@@ -37,6 +37,10 @@ SKIP_DIRS = {".git", "build", "DerivedData", "dist", "__pycache__", ".workbuddy-
 SKIP_FILES = {".DS_Store"}
 SKIP_EXT = {".ipa", ".xcworkspace", ".xcodeproj", ".dSYM"}
 
+# 无论如何都不上传的敏感文件（数据库配置、含凭据的运维脚本）
+DENY_PATTERNS = ("server/api/config.php",)
+DENY_PREFIXES = ("tools/_",)
+
 
 def log(msg=""):
     print(msg, flush=True)
@@ -49,6 +53,46 @@ def step(msg):
 def die(msg):
     print("\n[失败] " + msg, file=sys.stderr, flush=True)
     sys.exit(1)
+
+
+def collect_files():
+    """按 git 索引取文件（自动遵守 .gitignore），拿不到索引时退回目录遍历。"""
+    rels = None
+    try:
+        import subprocess
+        p = subprocess.run(["git", "ls-files", "-z"], cwd=ROOT,
+                           capture_output=True, timeout=30)
+        if p.returncode == 0 and p.stdout.strip():
+            rels = [r for r in p.stdout.decode("utf-8", "replace").split("\0") if r]
+    except Exception:
+        rels = None
+
+    out = []
+    if rels is not None:
+        for rel in sorted(rels):
+            rel = rel.replace("\\", "/")
+            if rel in DENY_PATTERNS or rel.startswith(DENY_PREFIXES):
+                continue
+            full = os.path.join(ROOT, rel.replace("/", os.sep))
+            if os.path.isfile(full):
+                out.append((rel, full))
+        return out
+
+    # 兜底：没有 git 索引时遍历目录
+    for base, dirs, files in os.walk(ROOT):
+        dirs[:] = [d for d in dirs if d not in SKIP_DIRS and not d.endswith(".xcodeproj")]
+        for name in files:
+            if name in SKIP_FILES:
+                continue
+            if any(name.endswith(ext) for ext in SKIP_EXT):
+                continue
+            full = os.path.join(base, name)
+            rel = os.path.relpath(full, ROOT).replace(os.sep, "/")
+            if rel in DENY_PATTERNS or rel.startswith(DENY_PREFIXES):
+                continue
+            out.append((rel, full))
+    out.sort()
+    return out
 
 
 def request(method, url, token, body=None, accept="application/vnd.github+json",
@@ -92,22 +136,6 @@ def request(method, url, token, body=None, accept="application/vnd.github+json",
                 time.sleep(2 + attempt * 2)
                 continue
             die("网络不可达（已重试 %d 次）：%s\n目标：%s" % (retries, last_err, url))
-
-
-def collect_files():
-    out = []
-    for base, dirs, files in os.walk(ROOT):
-        dirs[:] = [d for d in dirs if d not in SKIP_DIRS and not d.endswith(".xcodeproj")]
-        for name in files:
-            if name in SKIP_FILES:
-                continue
-            if any(name.endswith(ext) for ext in SKIP_EXT):
-                continue
-            full = os.path.join(base, name)
-            rel = os.path.relpath(full, ROOT).replace(os.sep, "/")
-            out.append((rel, full))
-    out.sort()
-    return out
 
 
 def ensure_repo(owner, repo, token, public):

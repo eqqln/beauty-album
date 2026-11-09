@@ -70,6 +70,12 @@ struct RootView: View {
                     .tag(4)
                     .tabItem { Label("代理", systemImage: "person.3.fill") }
             }
+
+            if store.settings.features.account {
+                AccountView()
+                    .tag(5)
+                    .tabItem { Label("我的", systemImage: "person.crop.circle.fill") }
+            }
         }
         .tint(Theme.roseDeep)
     }
@@ -80,6 +86,7 @@ struct RootView: View {
         case 2: return store.settings.features.appointments
         case 3: return store.settings.features.products
         case 4: return store.settings.features.agents
+        case 5: return store.settings.features.account
         default: return true
         }
     }

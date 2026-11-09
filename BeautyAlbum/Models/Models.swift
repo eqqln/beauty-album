@@ -692,6 +692,9 @@ struct FeatureFlags: Codable, Equatable {
     /// 时间：加入时间、拿货时间
     var agentTime: Bool = true
 
+    /// 会员账号（注册 / 登录 / 套餐）
+    var account: Bool = true
+
     init() {}
 
     init(from decoder: Decoder) throws {
@@ -710,6 +713,7 @@ struct FeatureFlags: Codable, Equatable {
         agentQuantity = try c.decodeIfPresent(Bool.self, forKey: .agentQuantity) ?? true
         agentRelation = try c.decodeIfPresent(Bool.self, forKey: .agentRelation) ?? true
         agentTime = try c.decodeIfPresent(Bool.self, forKey: .agentTime) ?? true
+        account = try c.decodeIfPresent(Bool.self, forKey: .account) ?? true
     }
 }
 

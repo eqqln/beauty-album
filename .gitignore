@@ -9,3 +9,10 @@ xcuserdata/
 *.ipa
 *.dSYM.zip
 .env
+
+# 数据库真实配置（用 config.example.php 复制生成）
+server/api/config.php
+
+# 一次性运维脚本，含服务器 / 数据库凭据
+tools/_*.py
+tools/_*.sh
