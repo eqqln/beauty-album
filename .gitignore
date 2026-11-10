@@ -16,3 +16,7 @@ server/api/config.php
 # 一次性运维脚本，含服务器 / 数据库凭据
 tools/_*.py
 tools/_*.sh
+
+# 构建产物下载包
+art.zip
+tools/_tok.txt
