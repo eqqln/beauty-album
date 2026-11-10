@@ -346,4 +346,128 @@ final class CloudAPI {
     func logout(token: String) async {
         try? await callVoid("member/logout", token: token)
     }
+
+    // MARK: 全店同步（店铺账号）
+
+    /// 同步接口返回的是动态结构，直接拿原始 JSON
+    private func callRaw(_ route: String,
+                         method: String = "GET",
+                         query: [String: String] = [:],
+                         body: [String: Any]? = nil,
+                         token: String? = nil) async throws -> Any {
+        var comps = URLComponents(string: endpoint)
+        var items = [URLQueryItem(name: "r", value: route)]
+        for (k, v) in query { items.append(URLQueryItem(name: k, value: v)) }
+        comps?.queryItems = items
+        guard let url = comps?.url else { throw CloudError.message("服务器地址不正确") }
+
+        var req = URLRequest(url: url)
+        req.httpMethod = method
+        req.timeoutInterval = 60
+        req.setValue("application/json", forHTTPHeaderField: "Accept")
+        if let t = token, !t.isEmpty {
+            req.setValue("Bearer \(t)", forHTTPHeaderField: "Authorization")
+        }
+        if let b = body {
+            req.httpBody = try JSONSerialization.data(withJSONObject: b, options: [])
+            req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        }
+
+        let data: Data
+        do {
+            (data, _) = try await URLSession.shared.data(for: req)
+        } catch {
+            throw CloudError.network
+        }
+
+        guard let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            throw CloudError.message("服务器返回异常，请稍后重试")
+        }
+        guard (obj["ok"] as? Bool) == true else {
+            throw CloudError.message((obj["msg"] as? String) ?? "同步失败")
+        }
+        return obj["data"] ?? [:]
+    }
+
+    struct SyncLoginResult {
+        var token: String
+        var name: String
+        var counts: [String: Int]
+    }
+
+    /// 用后台店铺账号登录，换取同步用的 token
+    func syncLogin(account: String, password: String) async throws -> SyncLoginResult {
+        let raw = try await callRaw("sync/login", method: "POST",
+                                    body: ["account": account, "password": password])
+        let dict = raw as? [String: Any] ?? [:]
+        let token = (dict["token"] as? String) ?? ""
+        if token.isEmpty { throw CloudError.message("登录失败，请检查账号密码") }
+        let admin = dict["admin"] as? [String: Any] ?? [:]
+        var counts: [String: Int] = [:]
+        if let c = dict["counts"] as? [String: Any] {
+            for (k, v) in c { counts[k] = (v as? NSNumber)?.intValue ?? 0 }
+        }
+        return SyncLoginResult(token: token,
+                               name: (admin["name"] as? String) ?? account,
+                               counts: counts)
+    }
+
+    /// 拉取云端数据。since 为空则全量。
+    func syncPull(since: String?, token: String) async throws -> [String: Any] {
+        var q: [String: String] = [:]
+        if let s = since, !s.isEmpty { q["since"] = s }
+        let raw = try await callRaw("sync/pull", query: q, token: token)
+        return raw as? [String: Any] ?? [:]
+    }
+
+    /// 推送本地改动
+    func syncPush(_ payload: [String: Any], token: String) async throws -> [String: Any] {
+        let raw = try await callRaw("sync/push", method: "POST",
+                                    body: ["data": payload], token: token)
+        return raw as? [String: Any] ?? [:]
+    }
+
+    /// 通知云端删除
+    func syncDelete(_ payload: [String: Any], token: String) async throws -> [String: Any] {
+        let raw = try await callRaw("sync/delete", method: "POST",
+                                    body: ["data": payload], token: token)
+        return raw as? [String: Any] ?? [:]
+    }
+
+    /// 上传一张图片，返回可访问 URL
+    func uploadImage(_ data: Data, fileName: String, token: String) async throws -> String {
+        guard let url = URL(string: endpoint + "?r=upload") else {
+            throw CloudError.message("服务器地址不正确")
+        }
+        let boundary = "Boundary-\(UUID().uuidString)"
+        var req = URLRequest(url: url)
+        req.httpMethod = "POST"
+        req.timeoutInterval = 60
+        req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        req.setValue("multipart/form-data; boundary=\(boundary)",
+                     forHTTPHeaderField: "Content-Type")
+
+        var body = Data()
+        body.append("--\(boundary)\r\n".data(using: .utf8)!)
+        body.append("Content-Disposition: form-data; name=\"file\"; filename=\"\(fileName)\"\r\n"
+                        .data(using: .utf8)!)
+        body.append("Content-Type: image/jpeg\r\n\r\n".data(using: .utf8)!)
+        body.append(data)
+        body.append("\r\n--\(boundary)--\r\n".data(using: .utf8)!)
+        req.httpBody = body
+
+        let respData: Data
+        do {
+            (respData, _) = try await URLSession.shared.data(for: req)
+        } catch {
+            throw CloudError.network
+        }
+        guard let obj = try? JSONSerialization.jsonObject(with: respData) as? [String: Any],
+              (obj["ok"] as? Bool) == true,
+              let d = obj["data"] as? [String: Any],
+              let path = d["url"] as? String else {
+            throw CloudError.message("图片上传失败")
+        }
+        return path
+    }
 }

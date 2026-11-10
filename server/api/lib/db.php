@@ -42,8 +42,10 @@ function db(): PDO
         init_schema($pdo);
         seed_data($pdo);
     }
-    // 老库升级：补齐钱包、充值卡与备份相关结构
-    if (!table_exists($pdo, 'recharge_cards') || !table_exists($pdo, 'backups')) {
+    // 老库升级：补齐钱包、充值卡、备份与 App 同步所需结构
+    if (!table_exists($pdo, 'recharge_cards') || !table_exists($pdo, 'backups')
+        || !table_exists($pdo, 'appointments') || !table_exists($pdo, 'client_steps')
+        || !table_exists($pdo, 'client_notes') || !table_exists($pdo, 'product_claims')) {
         init_schema($pdo);
         migrate_schema($pdo);
         seed_recharge($pdo);
@@ -79,6 +81,44 @@ function migrate_schema(PDO $db): void
     add_column($db, 'members', 'total_recharge', "DECIMAL(12,2) NOT NULL DEFAULT 0 COMMENT '累计充值'");
     add_column($db, 'members', 'total_spent', "DECIMAL(12,2) NOT NULL DEFAULT 0 COMMENT '累计消费'");
     add_column($db, 'members', 'total_points', "INT NOT NULL DEFAULT 0 COMMENT '累计获得积分'");
+
+    /* App ↔ 后台同步：每张业务表加 uid 映射 App 端的 UUID，加 updated_at 做增量拉取 */
+    foreach (['mentors', 'products', 'agents', 'agent_orders', 'customers', 'photos', 'compares', 'payments'] as $t) {
+        add_column($db, $t, 'uid', "VARCHAR(36) NULL COMMENT 'App 端 UUID'");
+        add_column($db, $t, 'updated_at', "DATETIME NULL");
+        add_index($db, $t, 'uk_uid', 'uid', true);
+    }
+
+    /* 后台原有表补 App 需要但缺的字段 */
+    add_column($db, 'customers', 'before_label', "VARCHAR(20) NULL");
+    add_column($db, 'customers', 'after_label', "VARCHAR(20) NULL");
+    add_column($db, 'products', 'category', "VARCHAR(60) NULL");
+    add_column($db, 'products', 'usage_steps', "TEXT NULL");
+    add_column($db, 'products', 'images', "TEXT NULL COMMENT 'JSON 数组'");
+    add_column($db, 'agents', 'client_uids', "TEXT NULL COMMENT 'JSON 数组'");
+    add_column($db, 'photos', 'tag', "VARCHAR(60) NULL");
+    add_column($db, 'photos', 'file_name', "VARCHAR(120) NULL");
+    add_column($db, 'photos', 'client_uid', "VARCHAR(36) NULL");
+    add_column($db, 'payments', 'client_uid', "VARCHAR(36) NULL");
+    add_column($db, 'compares', 'client_uid', "VARCHAR(36) NULL");
+    add_column($db, 'agent_orders', 'agent_uid', "VARCHAR(36) NULL");
+    add_column($db, 'appointments', 'updated_at', "DATETIME NULL");
+}
+
+function add_index(PDO $db, string $table, string $name, string $column, bool $unique = false): void
+{
+    $st = $db->prepare('SELECT COUNT(*) FROM information_schema.statistics WHERE table_schema = DATABASE() AND table_name = ? AND index_name = ?');
+    $st->execute([$table, $name]);
+    if ((int)$st->fetchColumn() > 0) return;
+    $kind = $unique ? 'UNIQUE' : '';
+    try {
+        $db->exec("ALTER TABLE `$table` ADD $kind INDEX `$name` (`$column`)");
+    } catch (Throwable $e) {
+        /* 老数据里已有重复 uid 时唯一索引会失败，降级成普通索引 */
+        if ($unique) {
+            try { $db->exec("ALTER TABLE `$table` ADD INDEX `$name` (`$column`)"); } catch (Throwable $e2) {}
+        }
+    }
 }
 
 function init_schema(PDO $db): void
@@ -222,6 +262,71 @@ function init_schema(PDO $db): void
         note VARCHAR(255),
         created_at DATETIME NOT NULL,
         KEY idx_cust (customer_id)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4";
+
+    /* ---- App 端独有、后台原先缺失的四张表 ---- */
+
+    $sql[] = "CREATE TABLE IF NOT EXISTS appointments (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        uid VARCHAR(36) NULL,
+        teacher_uid VARCHAR(36) NULL,
+        teacher_name VARCHAR(60),
+        client_uid VARCHAR(36) NULL,
+        client_name VARCHAR(60),
+        phone VARCHAR(30),
+        service VARCHAR(120),
+        `at` DATETIME NULL,
+        duration INT DEFAULT 60,
+        status VARCHAR(20) DEFAULT '待确认',
+        note TEXT,
+        created_at DATETIME NOT NULL,
+        updated_at DATETIME NULL,
+        UNIQUE KEY uk_uid (uid),
+        KEY idx_at (`at`),
+        KEY idx_teacher (teacher_uid)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4";
+
+    $sql[] = "CREATE TABLE IF NOT EXISTS client_steps (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        uid VARCHAR(36) NULL,
+        client_uid VARCHAR(36) NULL,
+        title VARCHAR(120),
+        done TINYINT(1) DEFAULT 0,
+        done_at DATETIME NULL,
+        note TEXT,
+        sort INT DEFAULT 0,
+        created_at DATETIME NOT NULL,
+        updated_at DATETIME NULL,
+        UNIQUE KEY uk_uid (uid),
+        KEY idx_client (client_uid)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4";
+
+    $sql[] = "CREATE TABLE IF NOT EXISTS client_notes (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        uid VARCHAR(36) NULL,
+        client_uid VARCHAR(36) NULL,
+        content TEXT,
+        created_at DATETIME NOT NULL,
+        updated_at DATETIME NULL,
+        UNIQUE KEY uk_uid (uid),
+        KEY idx_client (client_uid)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4";
+
+    $sql[] = "CREATE TABLE IF NOT EXISTS product_claims (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        uid VARCHAR(36) NULL,
+        client_uid VARCHAR(36) NULL,
+        product_uid VARCHAR(36) NULL,
+        product_name VARCHAR(120),
+        spec_name VARCHAR(120),
+        qty INT DEFAULT 1,
+        claimed TINYINT(1) DEFAULT 0,
+        claimed_at DATETIME NULL,
+        note TEXT,
+        created_at DATETIME NOT NULL,
+        updated_at DATETIME NULL,
+        UNIQUE KEY uk_uid (uid),
+        KEY idx_client (client_uid)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4";
 
     $sql[] = "CREATE TABLE IF NOT EXISTS packages (

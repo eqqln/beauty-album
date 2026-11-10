@@ -198,6 +198,68 @@
       ]
     },
 
+    /* ---------------- 预约（App 同步） ---------------- */
+    {
+      key: 'appointments', table: 'appointments', title: '预约', icon: '📅',
+      sub: 'App 端排期同步到这里，改一边两边都变',
+      order: 'at', asc: false, defaults: { status: '待确认', duration: 60 },
+      fields: [
+        { k: 'client_name', label: '客户', type: 'text', main: true, table: true },
+        { k: 'teacher_name', label: '导师', type: 'text', table: true },
+        { k: 'service', label: '项目', type: 'text', table: true },
+        { k: 'at', label: '预约时间', type: 'datetime', table: true },
+        { k: 'duration', label: '时长（分钟）', type: 'num', def: 60, table: true },
+        { k: 'status', label: '状态', type: 'select', opts: ['待确认', '已确认', '已完成', '已取消'], table: true, badge: true },
+        { k: 'phone', label: '联系电话', type: 'text' },
+        { k: 'client_uid', label: '关联客户', type: 'ref', ref: { table: 'customers', label: 'name', valueKey: 'uid' } },
+        { k: 'teacher_uid', label: '关联导师', type: 'ref', ref: { table: 'mentors', label: 'name', valueKey: 'uid' } },
+        { k: 'note', label: '备注', type: 'textarea' }
+      ]
+    },
+
+    /* ---------------- 护理步骤（App 同步） ---------------- */
+    {
+      key: 'steps', table: 'client_steps', title: '护理步骤', icon: '🪜',
+      sub: '每位客户的疗程步骤与完成情况',
+      order: 'sort', asc: true, defaults: { done: 0, sort: 0 },
+      fields: [
+        { k: 'title', label: '步骤名称', type: 'text', required: true, main: true, table: true },
+        { k: 'client_uid', label: '所属客户', type: 'ref', ref: { table: 'customers', label: 'name', valueKey: 'uid' }, table: true },
+        { k: 'done', label: '已完成', type: 'select', opts: [{ v: 0, t: '未完成' }, { v: 1, t: '已完成' }], table: true, badge: true },
+        { k: 'done_at', label: '完成时间', type: 'datetime', table: true },
+        { k: 'sort', label: '顺序', type: 'num', def: 0 },
+        { k: 'note', label: '备注', type: 'textarea' }
+      ]
+    },
+
+    /* ---------------- 客户笔记（App 同步） ---------------- */
+    {
+      key: 'notes', table: 'client_notes', title: '客户笔记', icon: '📝',
+      sub: 'App 里记的文字笔记',
+      order: 'id', asc: false, defaults: {},
+      fields: [
+        { k: 'content', label: '内容', type: 'textarea', main: true, table: true },
+        { k: 'client_uid', label: '所属客户', type: 'ref', ref: { table: 'customers', label: 'name', valueKey: 'uid' }, table: true },
+        { k: 'created_at', label: '记录时间', type: 'date', table: true }
+      ]
+    },
+
+    /* ---------------- 产品领用（App 同步） ---------------- */
+    {
+      key: 'claims', table: 'product_claims', title: '产品领用', icon: '🧴',
+      sub: '客户用了哪些产品、是否已领',
+      order: 'id', asc: false, defaults: { qty: 1, claimed: 0 },
+      fields: [
+        { k: 'product_name', label: '产品', type: 'text', main: true, table: true },
+        { k: 'client_uid', label: '所属客户', type: 'ref', ref: { table: 'customers', label: 'name', valueKey: 'uid' }, table: true },
+        { k: 'spec_name', label: '规格', type: 'text', table: true },
+        { k: 'qty', label: '数量', type: 'num', def: 1, table: true },
+        { k: 'claimed', label: '是否已领', type: 'select', opts: [{ v: 0, t: '待领' }, { v: 1, t: '已领' }], table: true, badge: true },
+        { k: 'claimed_at', label: '领取时间', type: 'datetime', table: true },
+        { k: 'note', label: '备注', type: 'textarea' }
+      ]
+    },
+
     /* ---------------- 钱包流水（只读） ---------------- */
     {
       key: 'wallet', table: 'wallet_logs', title: '钱包流水', icon: '💳',

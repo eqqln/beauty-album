@@ -44,7 +44,16 @@
       return m;
     }
     if (f.type === 'date' || f.type === 'datetime') return UI.fmtDate(v, f.type === 'datetime');
-    if (f.badge) return v ? UI.badge(v) : '<span class="td-sub">—</span>';
+    if (f.badge) {
+      if (v === null || v === undefined || v === '') return '<span class="td-sub">—</span>';
+      var shown = v;
+      if (f.opts) {
+        f.opts.forEach(function (o) {
+          if (o && typeof o === 'object' && String(o.v) === String(v)) shown = o.t;
+        });
+      }
+      return UI.badge(shown);
+    }
     if (f.type === 'tags') {
       if (!v) return '<span class="td-sub">—</span>';
       return String(v).split(/[,，]/).filter(Boolean).slice(0, 3)
@@ -62,6 +71,7 @@
       return '0';
     }
     if (f.ref) {
+      if (f.ref.showKey && row[f.ref.showKey]) return UI.esc(row[f.ref.showKey]);
       if (!v) return '<span class="td-sub">—</span>';
       return '<span class="td-sub">#' + UI.esc(v) + '</span>';
     }
@@ -125,7 +135,9 @@
                   UI.esc(values[f.k] || '') + '</textarea>';
       } else if (f.type === 'select') {
         control = '<select data-k="' + f.k + '">' + (f.opts || []).map(function (o) {
-          return '<option value="' + UI.esc(o) + '"' + (values[f.k] === o ? ' selected' : '') + '>' + UI.esc(o) + '</option>';
+          var val = (o && typeof o === 'object') ? o.v : o;
+          var txt = (o && typeof o === 'object') ? o.t : o;
+          return '<option value="' + UI.esc(val) + '"' + (String(values[f.k]) === String(val) ? ' selected' : '') + '>' + UI.esc(txt) + '</option>';
         }).join('') + '</select>';
       } else if (f.type === 'num' || f.type === 'money') {
         control = '<input type="number" step="' + (f.type === 'money' ? '0.01' : '1') +
@@ -139,13 +151,15 @@
       } else if (f.type === 'ref') {
         var type = REF_OPTS[f.k] || f.ref.table;
         var opts = await loadOptions(type);
+        var vk = f.ref.valueKey || 'id';
         var cur = values[f.k] === null || values[f.k] === undefined ? '' : String(values[f.k]);
         control = '<select data-k="' + f.k + '"><option value="">— 不选 —</option>' +
           opts.map(function (o) {
             var label2 = o.name || ('#' + o.id);
             if (o.phone) label2 += ' · ' + o.phone;
             if (o.price !== undefined && o.price !== null) label2 += ' · ' + UI.money(o.price);
-            return '<option value="' + o.id + '"' + (String(o.id) === cur ? ' selected' : '') + '>' +
+            var val = o[vk] === undefined || o[vk] === null ? '' : String(o[vk]);
+            return '<option value="' + UI.esc(val) + '"' + (val === cur ? ' selected' : '') + '>' +
                    UI.esc(label2) + '</option>';
           }).join('') + '</select>';
       } else if (f.type === 'image') {

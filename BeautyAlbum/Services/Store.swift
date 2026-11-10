@@ -158,6 +158,7 @@ final class Store: ObservableObject {
         c.steps = settings.stepTemplate.map { StepItem(title: $0) }
         clients.append(c)
         try? FileManager.default.createDirectory(at: clientDirectory(c.id), withIntermediateDirectories: true)
+        syncTouchClient(c.id)
         save()
         return c.id
     }
@@ -165,12 +166,26 @@ final class Store: ObservableObject {
     func deleteClient(_ id: UUID) {
         clients.removeAll { $0.id == id }
         try? FileManager.default.removeItem(at: clientDirectory(id))
+        SyncService.shared.markDeleted("customers", id)
         save()
     }
 
     func updateClient(_ id: UUID, _ mutate: (inout Client) -> Void) {
         guard let i = index(of: id) else { return }
         mutate(&clients[i])
+        syncTouchClient(id)
+    }
+
+    /// 客户的任何字段（含照片/步骤/笔记/收款/领用）变动，都记一次同步改动
+    private func syncTouchClient(_ id: UUID) {
+        let s = SyncService.shared
+        s.markDirty("customers")
+        s.markDirty("photos")
+        s.markDirty("steps")
+        s.markDirty("notes")
+        s.markDirty("payments")
+        s.markDirty("claims")
+        s.touch("customers", id)
     }
 
     // MARK: - 自动备份
@@ -270,6 +285,7 @@ final class Store: ObservableObject {
         }
         teachers.append(copy)
         try? FileManager.default.createDirectory(at: teachersURL, withIntermediateDirectories: true)
+        SyncService.shared.touch("teachers", copy.id)
         save()
         return copy.id
     }
@@ -277,6 +293,7 @@ final class Store: ObservableObject {
     func updateTeacher(_ t: Teacher) {
         guard let i = teachers.firstIndex(where: { $0.id == t.id }) else { return }
         teachers[i] = t
+        SyncService.shared.touch("teachers", t.id)
         save()
     }
 
@@ -284,6 +301,7 @@ final class Store: ObservableObject {
         teachers.removeAll { $0.id == id }
         ImageCache.shared.remove(teacherImageURL(id))
         try? FileManager.default.removeItem(at: teacherImageURL(id))
+        SyncService.shared.markDeleted("teachers", id)
         save()
     }
 
@@ -320,6 +338,7 @@ final class Store: ObservableObject {
     @discardableResult
     func addAppointment(_ a: Appointment) -> UUID {
         appointments.append(a)
+        SyncService.shared.touch("appointments", a.id)
         save()
         return a.id
     }
@@ -327,11 +346,13 @@ final class Store: ObservableObject {
     func updateAppointment(_ a: Appointment) {
         guard let i = appointments.firstIndex(where: { $0.id == a.id }) else { return }
         appointments[i] = a
+        SyncService.shared.touch("appointments", a.id)
         save()
     }
 
     func deleteAppointment(_ id: UUID) {
         appointments.removeAll { $0.id == id }
+        SyncService.shared.markDeleted("appointments", id)
         save()
     }
 
@@ -383,6 +404,7 @@ final class Store: ObservableObject {
     func addProduct(_ p: Product) -> UUID {
         products.append(p)
         try? FileManager.default.createDirectory(at: productDirectory(p.id), withIntermediateDirectories: true)
+        SyncService.shared.touch("products", p.id)
         save()
         return p.id
     }
@@ -390,12 +412,14 @@ final class Store: ObservableObject {
     func updateProduct(_ p: Product) {
         guard let i = products.firstIndex(where: { $0.id == p.id }) else { return }
         products[i] = p
+        SyncService.shared.touch("products", p.id)
         save()
     }
 
     func deleteProduct(_ id: UUID) {
         products.removeAll { $0.id == id }
         try? FileManager.default.removeItem(at: productDirectory(id))
+        SyncService.shared.markDeleted("products", id)
         save()
     }
 
@@ -449,6 +473,7 @@ final class Store: ObservableObject {
             copy.parentName = ""
         }
         agents.append(copy)
+        SyncService.shared.touch("agents", copy.id)
         save()
         return copy.id
     }
@@ -462,11 +487,13 @@ final class Store: ObservableObject {
             copy.parentName = ""
         }
         agents[i] = copy
+        SyncService.shared.touch("agents", copy.id)
         save()
     }
 
     func deleteAgent(_ id: UUID) {
         agents.removeAll { $0.id == id }
+        SyncService.shared.markDeleted("agents", id)
         // 下级代理脱离该上级，parentName 保留作为历史痕迹
         for i in agents.indices where agents[i].parentID == id {
             agents[i].parentID = nil
@@ -550,6 +577,7 @@ final class Store: ObservableObject {
     func addOrder(_ o: AgentOrder, to agentID: UUID) {
         guard let i = agents.firstIndex(where: { $0.id == agentID }) else { return }
         agents[i].orders.append(o)
+        SyncService.shared.touch("agent_orders", o.id)
         save()
     }
 
@@ -557,12 +585,14 @@ final class Store: ObservableObject {
         guard let i = agents.firstIndex(where: { $0.id == agentID }),
               let j = agents[i].orders.firstIndex(where: { $0.id == o.id }) else { return }
         agents[i].orders[j] = o
+        SyncService.shared.touch("agent_orders", o.id)
         save()
     }
 
     func deleteOrder(_ id: UUID, agentID: UUID) {
         guard let i = agents.firstIndex(where: { $0.id == agentID }) else { return }
         agents[i].orders.removeAll { $0.id == id }
+        SyncService.shared.markDeleted("agent_orders", id)
         save()
     }
 

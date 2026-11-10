@@ -53,6 +53,7 @@ struct AccountView: View {
                     } else {
                         authCard
                     }
+                    ShopSyncCard()
                     siteCard
                 }
                 .padding(.horizontal, Metrics.hPadding)

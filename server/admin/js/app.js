@@ -16,8 +16,12 @@
     { key: 'm:payments', title: '收款', icon: '💰', sub: '收款流水与欠款' },
     { group: '服务' },
     { key: 'm:customers', title: '客户', icon: '💁', sub: '客户档案与进度' },
-    { key: 'm:photos', title: '相册图片', icon: '🖼', sub: '使用前 / 使用后照片' },
-    { key: 'm:compares', title: '对比图', icon: '↔️', sub: '前后对比' },
+    { key: 'm:appointments', title: '预约', icon: '📅', sub: 'App 排期同步，改一边两边都变' },
+    { key: 'm:steps', title: '护理步骤', icon: '✅', sub: '疗程步骤与完成情况' },
+    { key: 'm:notes', title: '客户笔记', icon: '📔', sub: 'App 里记的文字笔记' },
+    { key: 'm:claims', title: '产品领用', icon: '🏷️', sub: '客户用了哪些产品' },
+    { key: 'm:photos', title: '相册图片', icon: '📷', sub: '使用前 / 使用后照片' },
+    { key: 'm:compares', title: '对比图', icon: '🔀', sub: '前后对比' },
     { key: 'm:mentors', title: '导师', icon: '🎓', sub: '导师档案' },
     { key: 'm:products', title: '产品', icon: '📦', sub: '产品与规格' },
     { group: '分销' },
@@ -295,6 +299,12 @@
           '<div class="d">' + UI.esc(c.d) + '</div></div>';
       }).join('') + '</div>';
 
+      /* App 同步状态：让店主一眼看出手机和后台是否已经对上 */
+      html += '<div class="section-head"><h3>App 数据同步</h3><div class="sp"></div>' +
+        '<span class="td-sub" id="syncHint">正在读取…</span></div>';
+      html += '<div class="card sync-panel" id="syncPanel">' +
+        '<div class="sync-grid" id="syncGrid"><span class="td-sub">读取中…</span></div></div>';
+
       html += '<div class="section-head"><h3>最近新增会员</h3><div class="sp"></div>' +
         '<button class="btn sm ghost" onclick="location.hash=\'#/m:members\'">全部会员</button></div>';
       html += '<div class="card" style="padding:0;overflow:hidden">';
@@ -347,8 +357,38 @@
       html += '</div>';
 
       view.innerHTML = html;
+      loadSyncPanel();
     } catch (e) {
       view.innerHTML = UI.empty(e.message, '⚠️');
+    }
+  }
+
+  /* 概览里的同步状态：拉各模块条数，标出还没上云的项目 */
+  async function loadSyncPanel() {
+    var grid = $('syncGrid');
+    var hint = $('syncHint');
+    if (!grid) return;
+    var LABELS = {
+      customers: '客户', photos: '照片', compares: '对比', payments: '收款',
+      steps: '护理步骤', notes: '笔记', claims: '产品领用',
+      teachers: '导师', products: '产品', agents: '代理',
+      agent_orders: '拿货', appointments: '预约'
+    };
+    try {
+      var r = await API.get('sync/stats');
+      var c = (r && r.counts) || {};
+      var total = 0;
+      Object.keys(c).forEach(function (k) { total += Number(c[k] || 0); });
+      grid.innerHTML = Object.keys(LABELS).map(function (k) {
+        var n = Number(c[k] || 0);
+        return '<div class="sync-cell' + (n === 0 ? ' zero' : '') + '">' +
+          '<div class="sc-k">' + LABELS[k] + '</div>' +
+          '<div class="sc-v">' + UI.num(n) + '</div></div>';
+      }).join('');
+      if (hint) hint.textContent = '共 ' + UI.num(total) + ' 条记录与 App 双向同步';
+    } catch (e) {
+      grid.innerHTML = '<span class="td-sub">同步状态读取失败：' + UI.esc(e.message) + '</span>';
+      if (hint) hint.textContent = '';
     }
   }
 

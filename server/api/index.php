@@ -26,6 +26,7 @@ require __DIR__ . '/lib/sms.php';
 require __DIR__ . '/lib/recharge.php';
 require __DIR__ . '/lib/backup.php';
 require __DIR__ . '/lib/ipa.php';
+require __DIR__ . '/lib/sync.php';
 
 $r = $_GET['r'] ?? '';
 if ($r === '' && !empty($_SERVER['PATH_INFO'])) {
@@ -141,6 +142,42 @@ function modules(): array
             'order' => 'id DESC',
             'ints' => ['member_id', 'points', 'points_after'],
             'floats' => ['amount', 'balance_after'],
+        ],
+        /* ---- App 端同步过来的四类数据，后台可直接管 ---- */
+        'appointments' => [
+            'table' => 'appointments',
+            'fields' => ['teacher_uid', 'teacher_name', 'client_uid', 'client_name', 'phone', 'service', 'at', 'duration', 'status', 'note'],
+            'search' => ['teacher_name', 'client_name', 'phone', 'service', 'note'],
+            'order' => 'at DESC, id DESC',
+            'ints' => ['duration'],
+            'floats' => [],
+            'dates' => ['at'],
+        ],
+        'steps' => [
+            'table' => 'client_steps',
+            'fields' => ['client_uid', 'title', 'done', 'done_at', 'note', 'sort'],
+            'search' => ['title', 'note'],
+            'order' => 'client_uid ASC, sort ASC, id ASC',
+            'ints' => ['done', 'sort'],
+            'floats' => [],
+            'dates' => ['done_at'],
+        ],
+        'notes' => [
+            'table' => 'client_notes',
+            'fields' => ['client_uid', 'content'],
+            'search' => ['content'],
+            'order' => 'id DESC',
+            'ints' => [],
+            'floats' => [],
+        ],
+        'claims' => [
+            'table' => 'product_claims',
+            'fields' => ['client_uid', 'product_uid', 'product_name', 'spec_name', 'qty', 'claimed', 'claimed_at', 'note'],
+            'search' => ['product_name', 'spec_name', 'note'],
+            'order' => 'id DESC',
+            'ints' => ['qty', 'claimed'],
+            'floats' => [],
+            'dates' => ['claimed_at'],
         ],
     ];
 }
@@ -1003,6 +1040,59 @@ try {
         }
 
         /* =====================================================
+           App ↔ 后台 双向同步
+           ===================================================== */
+        case 'sync/pull': {
+            admin_required();
+            $since = inp_str('since');
+            ok(sync_pull($since !== '' ? $since : null));
+        }
+
+        case 'sync/push': {
+            admin_required();
+            $b = body();
+            $payload = $b['data'] ?? $b;
+            if (!is_array($payload)) fail('数据格式不对');
+            ok(['saved' => sync_push($payload), 'server_time' => date('c')], '同步完成');
+        }
+
+        case 'sync/delete': {
+            admin_required();
+            $b = body();
+            $payload = $b['data'] ?? $b;
+            if (!is_array($payload)) fail('数据格式不对');
+            ok(sync_delete($payload), '已删除');
+        }
+
+        case 'sync/stats': {
+            admin_required();
+            ok(['counts' => sync_stats(), 'modules' => array_keys(sync_modules())]);
+        }
+
+        /** App 端登录后台账号做全店同步 */
+        case 'sync/login': {
+            $acc = inp_str('account');
+            $pass = (string)inp('password', '');
+            if ($acc === '' || $pass === '') fail('请输入账号和密码');
+            $st = db()->prepare('SELECT * FROM admins WHERE email=? LIMIT 1');
+            $st->execute([$acc]);
+            $a = $st->fetch();
+            if (!$a) {
+                $st = db()->prepare('SELECT * FROM admins WHERE LOWER(name)=? OR phone=? LIMIT 1');
+                $st->execute([strtolower($acc), $acc]);
+                $a = $st->fetch();
+            }
+            if (!$a || !password_verify($pass, (string)$a['pass_hash'])) fail('账号或密码不正确', 401);
+            if (($a['status'] ?? '正常') !== '正常') fail('该账号已被停用', 403);
+            db()->prepare('UPDATE admins SET last_login=? WHERE id=?')->execute([now(), $a['id']]);
+            ok([
+                'token' => admin_issue((int)$a['id']),
+                'admin' => admin_out($a),
+                'counts' => sync_stats(),
+            ], '登录成功');
+        }
+
+        /* =====================================================
            通用 CRUD
            ===================================================== */
         case 'list': {
@@ -1022,7 +1112,7 @@ try {
                 $where = ' WHERE (' . implode(' OR ', $parts) . ')';
             }
             // 附加筛选
-            foreach (['customer_id', 'member_id', 'agent_id', 'package_id', 'phase', 'status'] as $f) {
+            foreach (['customer_id', 'member_id', 'agent_id', 'package_id', 'phase', 'status', 'client_uid', 'agent_uid', 'teacher_uid'] as $f) {
                 $v = inp($f, null);
                 if ($v !== null && $v !== '') {
                     $where .= ($where === '' ? ' WHERE ' : ' AND ') . "`$f` = ?";
@@ -1037,6 +1127,23 @@ try {
             $st = db()->prepare("SELECT * FROM $table$where ORDER BY {$def['order']} LIMIT $size OFFSET $offset");
             $st->execute($args);
             $rows = $st->fetchAll();
+
+            /* 子表带 client_uid / agent_uid 时，回填父级名字，列表里直接显示人名而不是 UUID */
+            if ($rows && column_exists(db(), $table, 'client_uid')) {
+                $uids = array_values(array_unique(array_filter(array_column($rows, 'client_uid'))));
+                if ($uids) {
+                    $ph = implode(',', array_fill(0, count($uids), '?'));
+                    $nm = db()->prepare("SELECT uid, name FROM customers WHERE uid IN ($ph)");
+                    $nm->execute($uids);
+                    $map = [];
+                    foreach ($nm->fetchAll() as $x) $map[(string)$x['uid']] = $x['name'];
+                    foreach ($rows as &$row) {
+                        $row['client_name'] = $map[(string)($row['client_uid'] ?? '')] ?? '';
+                    }
+                    unset($row);
+                }
+            }
+
             if (!empty($def['hide'])) {
                 foreach ($rows as &$row) {
                     foreach ($def['hide'] as $h) unset($row[$h]);
@@ -1061,6 +1168,10 @@ try {
             foreach ($def['floats'] as $f) {
                 if (array_key_exists($f, $data)) $data[$f] = (float)$data[$f];
             }
+            /* 日期列：App 传来的 ISO8601 或后台 datetime-local 都统一成 DATETIME */
+            foreach (($def['dates'] ?? []) as $f) {
+                if (array_key_exists($f, $data)) $data[$f] = sync_dt($data[$f]);
+            }
 
             // 拿货金额自动计算
             if ($key === 'orders') {
@@ -1079,8 +1190,13 @@ try {
                 }
             }
 
+            /* 后台新建的行也补 uid + updated_at，App 才能拉到并回写 */
+            $hasUid = column_exists(db(), $def['table'], 'uid');
+            $hasUpd = column_exists(db(), $def['table'], 'updated_at');
+
             if ($id > 0) {
                 if (!$data) fail('没有需要更新的字段');
+                if ($hasUpd) $data['updated_at'] = now();
                 $sets = [];
                 $args = [];
                 foreach ($data as $k => $v) {
@@ -1096,6 +1212,8 @@ try {
             }
 
             $data['created_at'] = now();
+            if ($hasUid) $data['uid'] = sync_uuid();
+            if ($hasUpd) $data['updated_at'] = now();
             $cols = array_keys($data);
             $quoted = array_map(function ($c) { return "`$c`"; }, $cols);
             $st = db()->prepare("INSERT INTO {$def['table']}(" . implode(',', $quoted) . ') VALUES(' . rtrim(str_repeat('?,', count($cols)), ',') . ')');
@@ -1122,7 +1240,13 @@ try {
             $type = inp_str('type');
             switch ($type) {
                 case 'customers':
-                    $rows = db()->query('SELECT id, name, phone FROM customers ORDER BY id DESC LIMIT 500')->fetchAll();
+                    $rows = db()->query('SELECT id, uid, name, phone FROM customers ORDER BY id DESC LIMIT 500')->fetchAll();
+                    break;
+                case 'mentors':
+                    $rows = db()->query('SELECT id, uid, name, phone FROM mentors ORDER BY sort ASC, id ASC LIMIT 500')->fetchAll();
+                    break;
+                case 'products':
+                    $rows = db()->query('SELECT id, uid, name, price FROM products ORDER BY id DESC LIMIT 500')->fetchAll();
                     break;
                 case 'members':
                     $rows = db()->query('SELECT id, name, phone FROM members ORDER BY id DESC LIMIT 500')->fetchAll();
@@ -1131,7 +1255,7 @@ try {
                     $rows = db()->query('SELECT id, name, price FROM packages ORDER BY sort ASC, id ASC')->fetchAll();
                     break;
                 case 'agents':
-                    $rows = db()->query('SELECT id, name, level FROM agents ORDER BY id DESC LIMIT 500')->fetchAll();
+                    $rows = db()->query('SELECT id, uid, name, level FROM agents ORDER BY id DESC LIMIT 500')->fetchAll();
                     break;
                 default:
                     fail('未知选项类型');
