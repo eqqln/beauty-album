@@ -144,7 +144,7 @@
 
     /* ---------------- 相册图片 ---------------- */
     {
-      key: 'photos', table: 'photos', title: '相册图片', icon: '🖼',
+      key: 'photos', table: 'photos', title: '相册图片', icon: '📷',
       sub: '客户使用前 / 使用后照片',
       order: 'created_at', asc: false, defaults: { phase: '使用前' },
       fields: [
@@ -157,7 +157,7 @@
 
     /* ---------------- 对比图 ---------------- */
     {
-      key: 'compares', table: 'compares', title: '对比图', icon: '↔️',
+      key: 'compares', table: 'compares', title: '对比图', icon: '🔀',
       sub: '使用前 / 使用后对比，App 端可左右滑动查看',
       order: 'created_at', asc: false, defaults: {},
       fields: [
@@ -222,7 +222,7 @@
 
     /* ---------------- 护理步骤（App 同步） ---------------- */
     {
-      key: 'steps', table: 'client_steps', title: '护理步骤', icon: '🪜',
+      key: 'steps', table: 'client_steps', title: '护理步骤', icon: '✅',
       sub: '每位客户的疗程步骤与完成情况',
       order: 'sort', asc: true, defaults: { done: 0, sort: 0 },
       fields: [
@@ -249,7 +249,7 @@
 
     /* ---------------- 产品领用（App 同步） ---------------- */
     {
-      key: 'claims', table: 'product_claims', title: '产品领用', icon: '🧴',
+      key: 'claims', table: 'product_claims', title: '产品领用', icon: '🏷️',
       sub: '客户用了哪些产品、是否已领',
       order: 'id', asc: false, defaults: { qty: 1, claimed: 0 },
       fields: [

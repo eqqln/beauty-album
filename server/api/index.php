@@ -1271,6 +1271,16 @@ try {
             $rows = db()->query('SELECT k,v FROM settings')->fetchAll();
             $out = [];
             foreach ($rows as $row) $out[$row['k']] = $row['v'];
+            /* App 端设置项：即使还没写过也要有默认值，后台表单才不会空着 */
+            $appDefaults = [
+                'wechat_qr' => '', 'alipay_qr' => '', 'pay_link' => '', 'pay_note' => '',
+                'step_template' => '', 'app_features' => '',
+                'home_layout' => '竖排列表', 'home_columns' => '2',
+                'home_limit' => '0', 'show_cover' => '1',
+            ];
+            foreach ($appDefaults as $k => $v) {
+                if (!array_key_exists($k, $out)) $out[$k] = $v;
+            }
             $out['admin_invite'] = setting_get('admin_invite', '');
             ok($out);
         }
