@@ -17,6 +17,8 @@ struct RootView: View {
         }
         .onAppear {
             store.runAutoBackupIfNeeded()
+            // 启动即挂上自动同步：本地改动自动推、定时自动拉
+            SyncService.shared.activate(store: store)
         }
         .onChange(of: scenePhase) { phase in
             switch phase {
@@ -32,6 +34,8 @@ struct RootView: View {
                 backgroundedAt = nil
                 // 回到前台顺手检查一次自动备份是否到期
                 store.runAutoBackupIfNeeded()
+                // 回前台立刻拉一次云端改动
+                SyncService.shared.pullIfActive(store: store)
             default:
                 break
             }

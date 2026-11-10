@@ -1317,6 +1317,34 @@
           ]
         },
         {
+          title: 'App 收款码', fields: [
+            { k: 'wechat_qr', label: '微信收款码图片地址', ph: '上传后自动填，也可粘贴外链' },
+            { k: 'alipay_qr', label: '支付宝收款码图片地址', ph: '上传后自动填，也可粘贴外链' },
+            { k: 'pay_link', label: '商户收款链接', ph: '填了会生成带金额的二维码，留空则用收款码图' },
+            { k: 'pay_note', label: '扫码提示语', ph: '扫码后请输入本次金额' }
+          ]
+        },
+        {
+          title: 'App 流程模板', fields: [
+            { k: 'step_template', label: '护理环节（JSON 数组）', type: 'textarea',
+              ph: '["初次咨询","拍照建档","第 1 次护理","第 2 次护理","第 3 次护理","疗程结束"]' }
+          ]
+        },
+        {
+          title: 'App 首页布局', fields: [
+            { k: 'home_layout', label: '客户列表排列', ph: '竖排列表 / 横排卡片' },
+            { k: 'home_columns', label: '横排每行几个（2 或 3）', ph: '2' },
+            { k: 'home_limit', label: '首页最多显示几位（0 = 全部）', ph: '0' },
+            { k: 'show_cover', label: '显示封面图（1 开 / 0 关）', ph: '1' }
+          ]
+        },
+        {
+          title: 'App 功能开关', fields: [
+            { k: 'app_features', label: '模块开关（JSON）', type: 'textarea',
+              ph: '{"teachers":true,"appointments":true,"products":true,"payments":true,"compare":true,"steps":true,"notes":true,"backup":true,"agents":true,"agentParent":true,"agentQuantity":true,"agentRelation":true,"agentTime":true,"account":true}' }
+          ]
+        },
+        {
           title: '会员与短信', fields: [
             { k: 'sms_debug_code', label: '调试模式（1 开 / 0 关）', ph: '开启后未配置短信也能看到验证码' },
             { k: 'admin_invite', label: '员工注册邀请码', ph: '把这个码给员工即可注册' }

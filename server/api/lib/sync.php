@@ -26,6 +26,8 @@ function sync_modules(): array
         ],
         'photos' => [
             'table' => 'photos',
+            /* photos.url 是 NOT NULL，App 端刚拍还没上传时没有 URL，给个空串兜底 */
+            'defaults' => ['url' => ''],
             'map' => [
                 'client_uid' => 'client_uid', 'phase' => 'phase', 'url' => 'url',
                 'tag' => 'tag', 'file_name' => 'file_name', 'caption' => 'note',
@@ -250,7 +252,10 @@ function sync_row_in(array $rec, array $def): array
     $row = [];
 
     foreach ($def['map'] as $appKey => $dbKey) {
-        if (!array_key_exists($appKey, $rec)) continue;
+        if (!array_key_exists($appKey, $rec)) {
+            if (isset($def['defaults'][$appKey])) $row[$dbKey] = $def['defaults'][$appKey];
+            continue;
+        }
         $v = $rec[$appKey];
 
         if (in_array($appKey, $special, true)) {
@@ -319,6 +324,9 @@ function sync_pull(?string $since): array
         $out['data'][$name] = $rows;
     }
 
+    /* 店铺设置不是行式数据，单独拼一条 */
+    $out['data']['settings'] = [sync_settings_out()];
+
     $out['counts'] = array_map('count', $out['data']);
     return $out;
 }
@@ -330,6 +338,15 @@ function sync_push(array $payload): array
     $result = [];
 
     foreach ($payload as $name => $records) {
+        /* 店铺设置走单独通道 */
+        if ($name === 'settings') {
+            if (is_array($records) && $records) {
+                $rec = is_array(reset($records)) ? reset($records) : $records;
+                sync_settings_in($rec);
+                $result['settings'] = ['saved' => 1, 'skipped' => 0];
+            }
+            continue;
+        }
         if (!isset($mods[$name]) || !is_array($records)) continue;
         $def = $mods[$name];
         $table = $def['table'];
@@ -428,4 +445,58 @@ function sync_stats(): array
         }
     }
     return $out;
+}
+
+
+/* =========================================================
+   店铺设置（单条记录，存在 settings 键值表里）
+   ========================================================= */
+
+function sync_settings_out(): array
+{
+    $features = json_decode((string)setting_get('app_features', '{}'), true);
+    $steps = json_decode((string)setting_get('step_template', '[]'), true);
+
+    return [
+        'uid' => 'shop',
+        'shop_name' => setting_get('shop_name', '我的美容院'),
+        'before_label' => setting_get('before_label', '使用前'),
+        'after_label' => setting_get('after_label', '使用后'),
+        'wechat_qr' => setting_get('wechat_qr', ''),
+        'alipay_qr' => setting_get('alipay_qr', ''),
+        'pay_link' => setting_get('pay_link', ''),
+        'pay_note' => setting_get('pay_note', ''),
+        'step_template' => is_array($steps) ? array_values($steps) : [],
+        'features' => is_array($features) ? $features : new stdClass(),
+        'home_layout' => setting_get('home_layout', '竖排列表'),
+        'home_columns' => (int)setting_get('home_columns', '2'),
+        'home_limit' => (int)setting_get('home_limit', '0'),
+        'show_cover' => (int)setting_get('show_cover', '1'),
+        'updated_at' => setting_get('app_settings_updated', date('c')),
+    ];
+}
+
+function sync_settings_in(array $rec): void
+{
+    $strKeys = ['shop_name', 'before_label', 'after_label', 'wechat_qr', 'alipay_qr',
+                'pay_link', 'pay_note', 'home_layout'];
+    foreach ($strKeys as $k) {
+        if (array_key_exists($k, $rec)) setting_set($k, (string)$rec[$k]);
+    }
+
+    foreach (['home_columns', 'home_limit', 'show_cover'] as $k) {
+        if (array_key_exists($k, $rec)) setting_set($k, (string)(int)$rec[$k]);
+    }
+
+    if (array_key_exists('step_template', $rec)) {
+        $v = $rec['step_template'];
+        if (is_array($v)) setting_set('step_template', json_encode(array_values($v), JSON_UNESCAPED_UNICODE));
+    }
+
+    if (array_key_exists('features', $rec)) {
+        $v = $rec['features'];
+        if (is_array($v)) setting_set('app_features', json_encode($v, JSON_UNESCAPED_UNICODE));
+    }
+
+    setting_set('app_settings_updated', date('c'));
 }

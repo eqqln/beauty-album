@@ -50,7 +50,7 @@ struct ShopSyncCard: View {
             }
 
             if !sync.isLoggedIn {
-                Text("用网站后台的账号登录，手机和网站就会共用同一份数据。改一边，另一边刷新即可看到。")
+                Text("用网站后台的账号登录。登录后自动同步：软件里加客户、加老师、排预约，网站后台立刻就有；网站改了，手机也会自己更新。")
                     .font(.system(size: 12))
                     .foregroundColor(Theme.muted)
                     .fixedSize(horizontal: false, vertical: true)
@@ -69,6 +69,14 @@ struct ShopSyncCard: View {
             } else {
                 HStack(spacing: 10) {
                     VStack(alignment: .leading, spacing: 2) {
+                        HStack(spacing: 5) {
+                            Circle()
+                                .fill(sync.running ? Theme.rose : Color.green)
+                                .frame(width: 6, height: 6)
+                            Text(sync.running ? "同步中…" : "自动同步已开启")
+                                .font(.system(size: 11.5, weight: .medium))
+                                .foregroundColor(sync.running ? Theme.roseDeep : .green)
+                        }
                         Text(timeText)
                             .font(.system(size: 12))
                             .foregroundColor(Theme.muted)
@@ -250,6 +258,7 @@ struct ShopLoginSheet: View {
         do {
             try await sync.login(account: account.trimmingCharacters(in: .whitespaces),
                                  password: password)
+            SyncService.shared.activate(store: Store.shared)
             await sync.syncNow(store: Store.shared)
             busy = false
             dismiss()

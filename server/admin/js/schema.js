@@ -74,7 +74,10 @@
       fields: [
         { k: 'name', label: '产品名称', type: 'text', required: true, main: true },
         { k: 'brand', label: '品牌', type: 'text', table: true },
+        { k: 'category', label: '分类', type: 'text', ph: '精华 / 面膜 / 仪器', table: true },
+        { k: 'usage_steps', label: '使用步骤', type: 'textarea', ph: '每行一步，App 端按行展示' },
         { k: 'cover', label: '封面图', type: 'image', table: true, thumb: true },
+        { k: 'images', label: '产品图片（多张）', type: 'textarea', ph: '每行一个图片地址，App 端会下载到本地' },
         { k: 'price', label: '参考价（元）', type: 'money', table: true },
         { k: 'stock', label: '库存', type: 'num', table: true },
         { k: 'specs', label: '规格', type: 'textarea', ph: '每行一个规格，可带价格：\n30ml|298\n50ml|458', table: true, chip: true },
@@ -145,7 +148,7 @@
       sub: '客户使用前 / 使用后照片',
       order: 'created_at', asc: false, defaults: { phase: '使用前' },
       fields: [
-        { k: 'customer_id', label: '所属客户', type: 'ref', ref: { table: 'customers', label: 'name' }, required: true, main: true, table: true },
+        { k: 'client_uid', label: '所属客户', type: 'ref', ref: { table: 'customers', label: 'name', valueKey: 'uid', showKey: 'client_name' }, main: true, table: true },
         { k: 'phase', label: '阶段', type: 'select', opts: ['使用前', '使用后'], table: true, badge: true },
         { k: 'url', label: '照片', type: 'image', required: true, table: true, thumb: true },
         { k: 'note', label: '说明', type: 'textarea' }
@@ -158,7 +161,7 @@
       sub: '使用前 / 使用后对比，App 端可左右滑动查看',
       order: 'created_at', asc: false, defaults: {},
       fields: [
-        { k: 'customer_id', label: '所属客户', type: 'ref', ref: { table: 'customers', label: 'name' }, required: true, main: true, table: true },
+        { k: 'client_uid', label: '所属客户', type: 'ref', ref: { table: 'customers', label: 'name', valueKey: 'uid', showKey: 'client_name' }, main: true, table: true },
         { k: 'title', label: '标题', type: 'text', table: true },
         { k: 'before_url', label: '使用前', type: 'image', table: true, thumb: true },
         { k: 'after_url', label: '使用后', type: 'image', table: true, thumb: true },
@@ -172,7 +175,7 @@
       sub: '收款流水与欠款核对',
       order: 'paid_at', asc: false, defaults: { method: '微信', status: '已收款' },
       fields: [
-        { k: 'customer_id', label: '客户', type: 'ref', ref: { table: 'customers', label: 'name' }, main: true, table: true },
+        { k: 'client_uid', label: '客户', type: 'ref', ref: { table: 'customers', label: 'name', valueKey: 'uid', showKey: 'client_name' }, main: true, table: true },
         { k: 'member_id', label: '会员', type: 'ref', ref: { table: 'members', label: 'name' }, table: true },
         { k: 'amount', label: '金额（元）', type: 'money', required: true, table: true },
         { k: 'method', label: '收款方式', type: 'select', opts: PAY_METHOD, table: true },
@@ -211,8 +214,8 @@
         { k: 'duration', label: '时长（分钟）', type: 'num', def: 60, table: true },
         { k: 'status', label: '状态', type: 'select', opts: ['待确认', '已确认', '已完成', '已取消'], table: true, badge: true },
         { k: 'phone', label: '联系电话', type: 'text' },
-        { k: 'client_uid', label: '关联客户', type: 'ref', ref: { table: 'customers', label: 'name', valueKey: 'uid' } },
-        { k: 'teacher_uid', label: '关联导师', type: 'ref', ref: { table: 'mentors', label: 'name', valueKey: 'uid' } },
+        { k: 'client_uid', label: '关联客户', type: 'ref', ref: { table: 'customers', label: 'name', valueKey: 'uid', showKey: 'client_name' } },
+        { k: 'teacher_uid', label: '关联导师', type: 'ref', ref: { table: 'mentors', label: 'name', valueKey: 'uid', showKey: 'teacher_name' } },
         { k: 'note', label: '备注', type: 'textarea' }
       ]
     },
@@ -224,7 +227,7 @@
       order: 'sort', asc: true, defaults: { done: 0, sort: 0 },
       fields: [
         { k: 'title', label: '步骤名称', type: 'text', required: true, main: true, table: true },
-        { k: 'client_uid', label: '所属客户', type: 'ref', ref: { table: 'customers', label: 'name', valueKey: 'uid' }, table: true },
+        { k: 'client_uid', label: '所属客户', type: 'ref', ref: { table: 'customers', label: 'name', valueKey: 'uid', showKey: 'client_name' }, table: true },
         { k: 'done', label: '已完成', type: 'select', opts: [{ v: 0, t: '未完成' }, { v: 1, t: '已完成' }], table: true, badge: true },
         { k: 'done_at', label: '完成时间', type: 'datetime', table: true },
         { k: 'sort', label: '顺序', type: 'num', def: 0 },
@@ -239,7 +242,7 @@
       order: 'id', asc: false, defaults: {},
       fields: [
         { k: 'content', label: '内容', type: 'textarea', main: true, table: true },
-        { k: 'client_uid', label: '所属客户', type: 'ref', ref: { table: 'customers', label: 'name', valueKey: 'uid' }, table: true },
+        { k: 'client_uid', label: '所属客户', type: 'ref', ref: { table: 'customers', label: 'name', valueKey: 'uid', showKey: 'client_name' }, table: true },
         { k: 'created_at', label: '记录时间', type: 'date', table: true }
       ]
     },
@@ -251,7 +254,7 @@
       order: 'id', asc: false, defaults: { qty: 1, claimed: 0 },
       fields: [
         { k: 'product_name', label: '产品', type: 'text', main: true, table: true },
-        { k: 'client_uid', label: '所属客户', type: 'ref', ref: { table: 'customers', label: 'name', valueKey: 'uid' }, table: true },
+        { k: 'client_uid', label: '所属客户', type: 'ref', ref: { table: 'customers', label: 'name', valueKey: 'uid', showKey: 'client_name' }, table: true },
         { k: 'spec_name', label: '规格', type: 'text', table: true },
         { k: 'qty', label: '数量', type: 'num', def: 1, table: true },
         { k: 'claimed', label: '是否已领', type: 'select', opts: [{ v: 0, t: '待领' }, { v: 1, t: '已领' }], table: true, badge: true },

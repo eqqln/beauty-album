@@ -35,6 +35,8 @@ final class SyncService: ObservableObject {
     private let kTouch = "sync.touch"
     private let kImg   = "sync.imgurl"
     private let kDirty = "sync.dirty"
+    /// 店铺设置这条记录的固定 uid
+    static let shopUID = "00000000-0000-4000-8000-000000000001"
 
     /// "模块|uid" → 本地最后改动时间
     private var localTouch: [String: Date] = [:]
@@ -132,28 +134,160 @@ final class SyncService: ObservableObject {
         lastSummary = nil
     }
 
+    // MARK: 自动同步（核心）
+
+    private var bag = Set<AnyCancellable>()
+    private weak var boundStore: Store?
+    private var pushTask: Task<Void, Never>?
+    private var pullTask: Task<Void, Never>?
+    /// 合并云端数据期间不触发自动推送，否则会把自己拉下来的数据又推回去
+    private var suppressPushUntil = Date.distantPast
+
+    /// App 启动时调用一次：挂上监听、开定时拉取、立刻同步一轮
+    @MainActor
+    func activate(store: Store) {
+        guard boundStore == nil else { return }
+        boundStore = store
+        observeLocalChanges(store)
+        startPeriodicPull(store)
+        if isLoggedIn {
+            Task { await runSync(store: store, doPull: true, silent: true) }
+        }
+    }
+
+    /// 监听本地数据变化，1.2 秒防抖后静默推送
+    private func observeLocalChanges(_ store: Store) {
+        let push: () -> Void = { [weak self] in
+            guard let self else { return }
+            guard Date() >= self.suppressPushUntil else { return }
+            self.schedulePush(store: store)
+        }
+
+        // 客户及其全部子结构（照片/步骤/笔记/收款/领用都在 Client 里）
+        store.$clients
+            .dropFirst()
+            .debounce(for: .seconds(1.0), scheduler: RunLoop.main)
+            .sink { [weak self] _ in
+                guard let self, Date() >= self.suppressPushUntil else { return }
+                ["customers", "photos", "steps", "notes", "payments", "claims"].forEach { self.markDirty($0) }
+                push()
+            }
+            .store(in: &bag)
+
+        store.$teachers
+            .dropFirst()
+            .debounce(for: .seconds(1.0), scheduler: RunLoop.main)
+            .sink { [weak self] _ in
+                guard let self, Date() >= self.suppressPushUntil else { return }
+                self.markDirty("teachers")
+                push()
+            }
+            .store(in: &bag)
+
+        store.$appointments
+            .dropFirst()
+            .debounce(for: .seconds(1.0), scheduler: RunLoop.main)
+            .sink { [weak self] _ in
+                guard let self, Date() >= self.suppressPushUntil else { return }
+                self.markDirty("appointments")
+                push()
+            }
+            .store(in: &bag)
+
+        store.$products
+            .dropFirst()
+            .debounce(for: .seconds(1.0), scheduler: RunLoop.main)
+            .sink { [weak self] _ in
+                guard let self, Date() >= self.suppressPushUntil else { return }
+                self.markDirty("products")
+                push()
+            }
+            .store(in: &bag)
+
+        store.$agents
+            .dropFirst()
+            .debounce(for: .seconds(1.0), scheduler: RunLoop.main)
+            .sink { [weak self] _ in
+                guard let self, Date() >= self.suppressPushUntil else { return }
+                self.markDirty("agents")
+                self.markDirty("agent_orders")
+                push()
+            }
+            .store(in: &bag)
+
+        store.$settings
+            .dropFirst()
+            .debounce(for: .seconds(1.0), scheduler: RunLoop.main)
+            .sink { [weak self] _ in
+                guard let self, Date() >= self.suppressPushUntil else { return }
+                self.markDirty("settings")
+                push()
+            }
+            .store(in: &bag)
+    }
+
+    private func schedulePush(store: Store) {
+        guard isLoggedIn else { return }
+        pushTask?.cancel()
+        pushTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 1_200_000_000)
+            guard !Task.isCancelled, let self else { return }
+            await self.runSync(store: store, doPull: false, silent: true)
+        }
+    }
+
+    /// 每 60 秒静默拉一次，后台改了东西手机端自己就更新
+    private func startPeriodicPull(_ store: Store) {
+        pullTask?.cancel()
+        pullTask = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 60_000_000_000)
+                guard !Task.isCancelled, let self else { return }
+                guard self.isLoggedIn, !self.running else { continue }
+                await self.runSync(store: store, doPull: true, silent: true)
+            }
+        }
+    }
+
+    /// 回到前台时立刻拉一次
+    @MainActor
+    func pullIfActive(store: Store) {
+        guard isLoggedIn, !running else { return }
+        Task { await runSync(store: store, doPull: true, silent: true) }
+    }
+
     // MARK: 主流程
 
-    /// 一次完整同步：推送本地改动 → 拉取云端变更 → 合并进本地
+    /// 手动同步（界面上「立即同步」按钮）
     @MainActor
     func syncNow(store: Store) async {
-        guard let token = shopToken, !token.isEmpty else {
+        guard isLoggedIn else {
             errorText = "请先用店铺账号登录"
             return
         }
+        await runSync(store: store, doPull: true, silent: false)
+    }
+
+    /// 统一入口：silent = true 时不改界面的进度文字
+    @MainActor
+    private func runSync(store: Store, doPull: Bool, silent: Bool) async {
+        guard let token = shopToken, !token.isEmpty else { return }
         if running { return }
 
         running = true
-        errorText = nil
+        if !silent {
+            errorText = nil
+            progressText = "准备同步…"
+        }
         defer {
             running = false
-            progressText = ""
+            if !silent { progressText = "" }
         }
 
         do {
             // 1. 删除
             if !pendingDeletes.isEmpty {
-                progressText = "同步删除…"
+                if !silent { progressText = "同步删除…" }
                 var payload: [String: Any] = [:]
                 for (m, ids) in pendingDeletes { payload[m] = Array(ids) }
                 _ = try? await CloudAPI.shared.syncDelete(payload, token: token)
@@ -161,12 +295,12 @@ final class SyncService: ObservableObject {
             }
 
             // 2. 图片先上传
-            progressText = "上传图片…"
+            if !silent { progressText = "上传图片…" }
             try await uploadPendingImages(store: store, token: token)
 
             // 3. 推送本地改动
             if !dirtyModules.isEmpty {
-                progressText = "上传数据…"
+                if !silent { progressText = "上传数据…" }
                 var payload: [String: Any] = [:]
                 for m in dirtyModules {
                     let rows = buildPayload(module: m, store: store)
@@ -179,26 +313,37 @@ final class SyncService: ObservableObject {
                 UserDefaults.standard.set([String](), forKey: kDirty)
             }
 
+            guard doPull else {
+                errorText = nil
+                return
+            }
+
             // 4. 拉取云端
-            progressText = "下载数据…"
+            if !silent { progressText = "下载数据…" }
             let since = lastSyncAt.map { Self.iso($0) }
             let raw = try await CloudAPI.shared.syncPull(since: since, token: token)
             let data = raw["data"] as? [String: Any] ?? [:]
             let serverTime = (raw["server_time"] as? String).flatMap { Self.parseISO($0) } ?? Date()
 
-            progressText = "合并数据…"
+            if !silent { progressText = "合并数据…" }
+            // 合并期间及之后 3 秒内不触发自动推送，避免自己推自己
+            suppressPushUntil = Date().addingTimeInterval(3)
             let changed = merge(data: data, store: store)
             try await downloadMissingImages(store: store, token: token)
 
             lastSyncAt = serverTime
             UserDefaults.standard.set(serverTime.timeIntervalSince1970, forKey: kMark)
+            flushImages()
 
             lastSummary = changed.isEmpty
-                ? "已是最新，没有新数据"
+                ? "已是最新"
                 : "更新 " + changed.joined(separator: "、")
             errorText = nil
         } catch {
-            errorText = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+            // 自动同步失败不打扰用户，只有手动同步才把错误显示出来
+            if !silent {
+                errorText = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+            }
         }
     }
 
@@ -326,7 +471,7 @@ final class SyncService: ObservableObject {
                     "tags": t.tags,
                     "available": t.available,
                     "sort_index": t.sortIndex,
-                    "photo": store.teacherImageURL(t.id).lastPathComponent,
+                    "photo": imageURLs["teacher/\(t.id.uuidString)"] ?? "",
                     "created_at": Self.iso(t.createdAt),
                     "updated_at": Self.iso(touchDate("teachers", t.id, fallback: t.createdAt))
                 ]
@@ -342,10 +487,12 @@ final class SyncService: ObservableObject {
                     "intro": p.intro,
                     "stage": p.stage,
                     "usage_steps": p.usageSteps,
-                    "images": p.imageNames,
+                    "images": p.imageNames.compactMap { imageURLs["product/\(p.id.uuidString)/\($0)"] },
                     "price": p.specs.map(\.price).min() ?? 0,
                     "stock": p.totalStock,
-                    "specs": p.specs.map { ["name": $0.name, "price": $0.price, "stock": $0.stock] },
+                    "specs": p.specs.map { sp -> [String: Any] in
+                        ["name": sp.name, "price": sp.price, "stock": sp.stock]
+                    },
                     "created_at": Self.iso(p.createdAt),
                     "updated_at": Self.iso(touchDate("products", p.id, fallback: p.createdAt))
                 ]
@@ -390,6 +537,41 @@ final class SyncService: ObservableObject {
                 }
             }
             return out
+
+        case "settings":
+            let f = store.settings.features
+            return [[
+                "uid": Self.shopUID,
+                "shop_name": store.settings.shopName,
+                "before_label": store.settings.beforeLabel,
+                "after_label": store.settings.afterLabel,
+                "pay_link": store.settings.payLink,
+                "pay_note": store.settings.payNote,
+                "wechat_qr": store.settings.wechatQR == nil ? "" : (imageURLs["shop/wechat_qr"] ?? ""),
+                "alipay_qr": store.settings.alipayQR == nil ? "" : (imageURLs["shop/alipay_qr"] ?? ""),
+                "step_template": store.settings.stepTemplate,
+                "features": [
+                    "teachers": f.teachers,
+                    "appointments": f.appointments,
+                    "products": f.products,
+                    "payments": f.payments,
+                    "compare": f.compare,
+                    "steps": f.steps,
+                    "notes": f.notes,
+                    "backup": f.backup,
+                    "agents": f.agents,
+                    "agentParent": f.agentParent,
+                    "agentQuantity": f.agentQuantity,
+                    "agentRelation": f.agentRelation,
+                    "agentTime": f.agentTime,
+                    "account": f.account
+                ],
+                "home_layout": store.settings.clientLayout.rawValue,
+                "home_columns": store.settings.clientColumns,
+                "home_limit": store.settings.homeClientLimit,
+                "show_cover": store.settings.showClientCover ? 1 : 0,
+                "updated_at": Self.iso(Date())
+            ]]
 
         case "appointments":
             return store.appointments.map { a in
@@ -622,10 +804,15 @@ final class SyncService: ObservableObject {
                     t.createdAt = date(r, "created_at") ?? Date()
                     store.teachers.append(t)
                 }
+                let photo = str(r, "photo")
+                if photo.hasPrefix("/") || photo.hasPrefix("http") {
+                    imageURLs["teacher/\(uid.uuidString)"] = photo
+                }
                 stamp("teachers", uid, r)
                 n += 1
             }
             if n > 0 { changed.append("导师 \(n)") }
+            if n > 0 { flushImages() }
         }
 
         // 产品
@@ -634,7 +821,14 @@ final class SyncService: ObservableObject {
             for r in rows {
                 guard let uid = UUID(uuidString: str(r, "uid")) else { continue }
                 let usage = (r["usage_steps"] as? [String]) ?? []
-                let imgs = (r["images"] as? [String]) ?? []
+                let imgURLs = (r["images"] as? [String]) ?? []
+                var imgs: [String] = []
+                for u in imgURLs where !u.isEmpty {
+                    let name = (u as NSString).lastPathComponent
+                    if name.isEmpty { continue }
+                    imgs.append(name)
+                    imageURLs["product/\(uid.uuidString)/\(name)"] = u
+                }
                 var specs: [ProductSpec] = []
                 if let rawSpecs = r["specs"] as? [[String: Any]] {
                     for s in rawSpecs {
@@ -673,6 +867,7 @@ final class SyncService: ObservableObject {
                 n += 1
             }
             if n > 0 { changed.append("产品 \(n)") }
+            if n > 0 { flushImages() }
         }
 
         // 代理
@@ -787,6 +982,84 @@ final class SyncService: ObservableObject {
             if n > 0 { changed.append("预约 \(n)") }
         }
 
+        // 店铺设置
+        if let rows = data["settings"] as? [[String: Any]], let r = rows.first {
+            var st = store.settings
+            var touched = false
+
+            if let v = r["shop_name"] as? String, !v.isEmpty, v != st.shopName {
+                st.shopName = v; touched = true
+            }
+            if let v = r["before_label"] as? String, !v.isEmpty, v != st.beforeLabel {
+                st.beforeLabel = v; touched = true
+            }
+            if let v = r["after_label"] as? String, !v.isEmpty, v != st.afterLabel {
+                st.afterLabel = v; touched = true
+            }
+            if let v = r["pay_link"] as? String, v != st.payLink {
+                st.payLink = v; touched = true
+            }
+            if let v = r["pay_note"] as? String, !v.isEmpty, v != st.payNote {
+                st.payNote = v; touched = true
+            }
+            // 收款码：云端有地址就记下来，稍后 downloadMissingImages 拉回本地
+            if let v = r["wechat_qr"] as? String, !v.isEmpty, v != (imageURLs["shop/wechat_qr"] ?? "") {
+                imageURLs["shop/wechat_qr"] = v
+                if st.wechatQR == nil { st.wechatQR = "wechat.jpg"; touched = true }
+            }
+            if let v = r["alipay_qr"] as? String, !v.isEmpty, v != (imageURLs["shop/alipay_qr"] ?? "") {
+                imageURLs["shop/alipay_qr"] = v
+                if st.alipayQR == nil { st.alipayQR = "alipay.jpg"; touched = true }
+            }
+            if let v = r["step_template"] as? [String], !v.isEmpty, v != st.stepTemplate {
+                st.stepTemplate = v; touched = true
+            }
+            if let v = r["home_layout"] as? String,
+               let lay = ClientListLayout(rawValue: v), lay != st.clientLayout {
+                st.clientLayout = lay; touched = true
+            }
+            if let n = r["home_columns"] as? NSNumber {
+                let v = min(3, max(2, n.intValue))
+                if v != st.clientColumns { st.clientColumns = v; touched = true }
+            }
+            if let n = r["home_limit"] as? NSNumber {
+                let v = max(0, n.intValue)
+                if v != st.homeClientLimit { st.homeClientLimit = v; touched = true }
+            }
+            if let n = r["show_cover"] as? NSNumber {
+                let v = n.boolValue
+                if v != st.showClientCover { st.showClientCover = v; touched = true }
+            }
+            if let f = r["features"] as? [String: Any] {
+                var nf = st.features
+                func b(_ k: String) -> Bool? {
+                    if let x = f[k] as? Bool { return x }
+                    if let x = f[k] as? NSNumber { return x.boolValue }
+                    return nil
+                }
+                if let x = b("teachers") { nf.teachers = x }
+                if let x = b("appointments") { nf.appointments = x }
+                if let x = b("products") { nf.products = x }
+                if let x = b("payments") { nf.payments = x }
+                if let x = b("compare") { nf.compare = x }
+                if let x = b("steps") { nf.steps = x }
+                if let x = b("notes") { nf.notes = x }
+                if let x = b("backup") { nf.backup = x }
+                if let x = b("agents") { nf.agents = x }
+                if let x = b("agentParent") { nf.agentParent = x }
+                if let x = b("agentQuantity") { nf.agentQuantity = x }
+                if let x = b("agentRelation") { nf.agentRelation = x }
+                if let x = b("agentTime") { nf.agentTime = x }
+                if let x = b("account") { nf.account = x }
+                if nf != st.features { st.features = nf; touched = true }
+            }
+
+            if touched {
+                store.settings = st
+                changed.append("店铺设置")
+            }
+        }
+
         if !changed.isEmpty {
             store.clients = store.clients
             store.teachers = store.teachers
@@ -815,6 +1088,46 @@ final class SyncService: ObservableObject {
 
     /// 把本地还没上传过的照片传上去
     private func uploadPendingImages(store: Store, token: String) async throws {
+        // 收款码（微信 / 支付宝）
+        for kind in ["wechat", "alipay"] {
+            let key = "shop/\(kind)_qr"
+            if let u = imageURLs[key], !u.isEmpty { continue }
+            let isSet = (kind == "wechat") ? (store.settings.wechatQR != nil) : (store.settings.alipayQR != nil)
+            if !isSet { continue }
+            let local = store.qrURL.appendingPathComponent("\(kind).jpg")
+            guard let data = try? Data(contentsOf: local), !data.isEmpty,
+                  data.count <= 11 * 1024 * 1024 else { continue }
+            if let path = try? await CloudAPI.shared.uploadImage(data, fileName: "\(kind)_qr.jpg", token: token) {
+                imageURLs[key] = path
+            }
+        }
+
+        // 导师头像
+        for t in store.teachers {
+            let key = "teacher/\(t.id.uuidString)"
+            if let u = imageURLs[key], !u.isEmpty { continue }
+            let url = store.teacherImageURL(t.id)
+            guard let data = try? Data(contentsOf: url), !data.isEmpty,
+                  data.count <= 11 * 1024 * 1024 else { continue }
+            if let path = try? await CloudAPI.shared.uploadImage(data, fileName: "\(t.id.uuidString).jpg", token: token) {
+                imageURLs[key] = path
+            }
+        }
+
+        // 产品图片
+        for p in store.products {
+            for name in p.imageNames {
+                let key = "product/\(p.id.uuidString)/\(name)"
+                if let u = imageURLs[key], !u.isEmpty { continue }
+                let url = store.productImageURL(p.id, name: name)
+                guard let data = try? Data(contentsOf: url), !data.isEmpty,
+                      data.count <= 11 * 1024 * 1024 else { continue }
+                if let path = try? await CloudAPI.shared.uploadImage(data, fileName: name, token: token) {
+                    imageURLs[key] = path
+                }
+            }
+        }
+
         for c in store.clients {
             for p in c.photos {
                 let key = "\(c.id.uuidString)/\(p.fileName)"
@@ -832,6 +1145,44 @@ final class SyncService: ObservableObject {
 
     /// 云端有、本地缺的照片下载回来
     private func downloadMissingImages(store: Store, token: String) async throws {
+        // 收款码
+        for kind in ["wechat", "alipay"] {
+            let key = "shop/\(kind)_qr"
+            guard let path = imageURLs[key], !path.isEmpty else { continue }
+            let local = store.qrURL.appendingPathComponent("\(kind).jpg")
+            if FileManager.default.fileExists(atPath: local.path) { continue }
+            guard let data = await fetchImage(path) else { continue }
+            try? FileManager.default.createDirectory(at: store.qrURL, withIntermediateDirectories: true)
+            try? data.write(to: local)
+            ImageCache.shared.remove(local)
+        }
+
+        // 导师头像
+        for t in store.teachers {
+            let key = "teacher/\(t.id.uuidString)"
+            let local = store.teacherImageURL(t.id)
+            if FileManager.default.fileExists(atPath: local.path) { continue }
+            guard let path = imageURLs[key], !path.isEmpty,
+                  let data = await fetchImage(path) else { continue }
+            try? FileManager.default.createDirectory(at: store.teachersURL, withIntermediateDirectories: true)
+            try? data.write(to: local)
+            ImageCache.shared.remove(local)
+        }
+
+        // 产品图片
+        for p in store.products {
+            for name in p.imageNames {
+                let key = "product/\(p.id.uuidString)/\(name)"
+                let local = store.productImageURL(p.id, name: name)
+                if FileManager.default.fileExists(atPath: local.path) { continue }
+                guard let path = imageURLs[key], !path.isEmpty,
+                      let data = await fetchImage(path) else { continue }
+                try? FileManager.default.createDirectory(at: store.productDirectory(p.id), withIntermediateDirectories: true)
+                try? data.write(to: local)
+                ImageCache.shared.remove(local)
+            }
+        }
+
         for c in store.clients {
             for p in c.photos where !p.fileName.isEmpty {
                 let key = "\(c.id.uuidString)/\(p.fileName)"
@@ -846,6 +1197,14 @@ final class SyncService: ObservableObject {
                 try? data.write(to: local)
             }
         }
+    }
+
+    /// 下载一张云端图片
+    private func fetchImage(_ path: String) async -> Data? {
+        let full = path.hasPrefix("http") ? path : (CloudAPI.shared.baseURL + path)
+        guard let u = URL(string: full) else { return nil }
+        guard let (data, _) = try? await URLSession.shared.data(from: u) else { return nil }
+        return data.isEmpty ? nil : data
     }
 
     // MARK: 工具

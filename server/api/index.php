@@ -73,7 +73,7 @@ function modules(): array
         ],
         'products' => [
             'table' => 'products',
-            'fields' => ['name', 'brand', 'price', 'stock', 'specs', 'stages', 'steps', 'cover', 'desc', 'status'],
+            'fields' => ['name', 'brand', 'category', 'price', 'stock', 'specs', 'stages', 'usage_steps', 'steps', 'cover', 'images', 'desc', 'status'],
             'search' => ['name', 'brand', 'stages', 'desc'],
             'order' => 'id DESC',
             'ints' => ['stock'],
@@ -1281,7 +1281,10 @@ try {
             $allow = ['shop_name', 'shop_slogan', 'before_label', 'after_label', 'contact_phone',
                       'contact_wechat', 'pay_qr', 'api_base', 'app_version', 'ipa_file', 'ipa_size',
                       'install_note', 'notice', 'sms_enabled', 'sms_default', 'sms_debug_code',
-                      'recharge_enabled', 'recharge_prefix', 'recharge_default_days', 'recharge_min', 'recharge_notice'];
+                      'recharge_enabled', 'recharge_prefix', 'recharge_default_days', 'recharge_min', 'recharge_notice',
+                      /* App 端设置项，与 IPA 的 AppSettings 一一对应 */
+                      'wechat_qr', 'alipay_qr', 'pay_link', 'pay_note',
+                      'step_template', 'app_features', 'home_layout', 'home_columns', 'home_limit', 'show_cover'];
             foreach ($allow as $k) {
                 if (array_key_exists($k, $b)) setting_set($k, (string)$b[$k]);
             }
