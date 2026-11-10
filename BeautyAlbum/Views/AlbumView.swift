@@ -1,6 +1,10 @@
 import SwiftUI
 import PhotosUI
 import UIKit
+import AVKit
+import AVFoundation
+import CoreTransferable
+import UniformTypeIdentifiers
 
 enum PhaseFilter: String, CaseIterable, Identifiable {
     case all
@@ -25,10 +29,12 @@ struct AlbumView: View {
 
     @State private var filter: PhaseFilter = .all
     @State private var pickerItems: [PhotosPickerItem] = []
+    @State private var videoPickerItems: [PhotosPickerItem] = []
     @State private var showCamera = false
     @State private var capturedImage: UIImage?
     @State private var importing = false
     @State private var viewingID: UUID?
+    @State private var playingVideo: PhotoItem?
     @State private var toast: String?
 
     private var photos: [PhotoItem] {
@@ -72,6 +78,10 @@ struct AlbumView: View {
             guard !items.isEmpty else { return }
             importPicked(items)
         }
+        .onChange(of: videoPickerItems) { items in
+            guard !items.isEmpty else { return }
+            importVideos(items)
+        }
         .onChange(of: capturedImage) { img in
             guard let img else { return }
             if let name = store.importImage(img, clientID: clientID) {
@@ -92,6 +102,10 @@ struct AlbumView: View {
             if let id = viewingID {
                 PhotoViewer(clientID: clientID, client: $client, startPhotoID: id)
             }
+        }
+        .sheet(item: $playingVideo) { v in
+            VideoPlayerSheet(url: store.videoURL(clientID: clientID, photo: v),
+                             title: v.caption.isEmpty ? "视频" : v.caption)
         }
         .overlay(alignment: .bottom) {
             if let toast {
@@ -182,6 +196,21 @@ struct AlbumView: View {
                 .clipShape(Capsule())
             }
 
+            PhotosPicker(selection: $videoPickerItems,
+                         maxSelectionCount: 5,
+                         matching: .videos,
+                         photoLibrary: .shared()) {
+                HStack(spacing: 5) {
+                    Image(systemName: "video.badge.plus").font(.system(size: 12, weight: .medium))
+                    Text("加视频").font(.system(size: 13, weight: .medium))
+                }
+                .foregroundColor(Theme.roseDeep)
+                .padding(.horizontal, 14)
+                .padding(.vertical, 9)
+                .background(Theme.roseLight)
+                .clipShape(Capsule())
+            }
+
             Spacer(minLength: 0)
 
             if importing {
@@ -197,9 +226,16 @@ struct AlbumView: View {
     // MARK: 网格单元
 
     private func cell(_ p: PhotoItem) -> some View {
-        let url = store.photoURL(clientID: clientID, fileName: p.fileName)
+        let url = p.isVideo
+            ? (store.thumbURL(clientID: clientID, photo: p)
+                ?? store.photoURL(clientID: clientID, fileName: p.fileName))
+            : store.photoURL(clientID: clientID, fileName: p.fileName)
         return Button {
-            viewingID = p.id
+            if p.isVideo {
+                playingVideo = p
+            } else {
+                viewingID = p.id
+            }
         } label: {
             GeometryReader { geo in
                 ZStack(alignment: .topLeading) {
@@ -209,6 +245,36 @@ struct AlbumView: View {
 
                     PhaseBadge(text: store.settings.label(for: p.phase), phase: p.phase)
                         .padding(5)
+
+                    if p.isVideo {
+                        ZStack {
+                            Circle()
+                                .fill(Color.black.opacity(0.45))
+                                .frame(width: 34, height: 34)
+                            Image(systemName: "play.fill")
+                                .font(.system(size: 14, weight: .bold))
+                                .foregroundColor(.white)
+                                .offset(x: 1.5)
+                        }
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .allowsHitTesting(false)
+
+                        VStack {
+                            Spacer()
+                            HStack {
+                                Spacer()
+                                Text(p.durationText)
+                                    .font(.system(size: 10.5, weight: .semibold))
+                                    .foregroundColor(.white)
+                                    .padding(.horizontal, 6)
+                                    .padding(.vertical, 3)
+                                    .background(Color.black.opacity(0.6))
+                                    .clipShape(Capsule())
+                            }
+                        }
+                        .padding(5)
+                        .allowsHitTesting(false)
+                    }
 
                     if !p.tag.isEmpty {
                         VStack {
@@ -281,6 +347,34 @@ struct AlbumView: View {
                     showToast("已添加 \(added) 张\(store.settings.label(for: phase))照片")
                 } else {
                     showToast("没有导入成功，请重试")
+                }
+            }
+        }
+    }
+
+    private func importVideos(_ items: [PhotosPickerItem]) {
+        importing = true
+        let phase = targetPhase
+        Task {
+            var added = 0
+            for item in items {
+                guard let picked = try? await item.loadTransferable(type: PickedVideo.self) else { continue }
+                defer { try? FileManager.default.removeItem(at: picked.url) }
+                guard var photo = store.importVideo(from: picked.url, clientID: clientID) else { continue }
+                photo.phase = phase
+                await MainActor.run {
+                    client.photos.append(photo)
+                }
+                added += 1
+            }
+            await MainActor.run {
+                store.save()
+                importing = false
+                videoPickerItems = []
+                if added > 0 {
+                    showToast("已添加 \(added) 段\(store.settings.label(for: phase))视频")
+                } else {
+                    showToast("视频导入失败，换一段再试")
                 }
             }
         }
@@ -479,5 +573,92 @@ struct PhotoViewer: View {
             }
         }
         .padding(.bottom, 34)
+    }
+}
+
+// MARK: - 视频导入与播放
+
+/// 从系统相册取视频：复制到临时目录，避免整段读进内存
+struct PickedVideo: Transferable {
+    let url: URL
+
+    static var transferRepresentation: some TransferRepresentation {
+        FileRepresentation(contentType: .movie) { video in
+            SentTransferredFile(video.url)
+        } importing: { received in
+            let tmp = FileManager.default.temporaryDirectory
+                .appendingPathComponent(UUID().uuidString + ".mp4")
+            try? FileManager.default.removeItem(at: tmp)
+            try FileManager.default.copyItem(at: received.file, to: tmp)
+            return PickedVideo(url: tmp)
+        }
+    }
+}
+
+/// 全屏播放器
+struct VideoPlayerSheet: View {
+    let url: URL
+    var title: String = "视频"
+
+    @Environment(\.dismiss) private var dismiss
+    @State private var player: AVPlayer?
+
+    var body: some View {
+        ZStack {
+            Color.black.ignoresSafeArea()
+
+            if FileManager.default.fileExists(atPath: url.path) {
+                if let player {
+                    VideoPlayer(player: player)
+                        .ignoresSafeArea()
+                        .onAppear { player.play() }
+                } else {
+                    ProgressView().tint(.white)
+                }
+            } else {
+                VStack(spacing: 10) {
+                    Image(systemName: "video.slash")
+                        .font(.system(size: 34))
+                        .foregroundColor(.white.opacity(0.6))
+                    Text("视频文件不在本地")
+                        .font(.system(size: 14))
+                        .foregroundColor(.white.opacity(0.75))
+                    Text("等同步完成后会自动下载")
+                        .font(.system(size: 12))
+                        .foregroundColor(.white.opacity(0.45))
+                }
+            }
+
+            VStack {
+                HStack {
+                    Text(title)
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundColor(.white)
+                    Spacer()
+                    Button {
+                        player?.pause()
+                        dismiss()
+                    } label: {
+                        Image(systemName: "xmark")
+                            .font(.system(size: 14, weight: .semibold))
+                            .foregroundColor(.white)
+                            .frame(width: 32, height: 32)
+                            .background(Color.white.opacity(0.18))
+                            .clipShape(Circle())
+                    }
+                }
+                .padding(.horizontal, 16)
+                .padding(.top, 12)
+                Spacer()
+            }
+        }
+        .onAppear {
+            guard FileManager.default.fileExists(atPath: url.path) else { return }
+            player = AVPlayer(url: url)
+        }
+        .onDisappear {
+            player?.pause()
+            player = nil
+        }
     }
 }

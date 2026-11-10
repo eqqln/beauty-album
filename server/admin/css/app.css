@@ -372,3 +372,19 @@ code{
 @media (max-width:900px){.sync-grid{grid-template-columns:repeat(4,1fr)}}
 @media (max-width:720px){.sync-grid{grid-template-columns:repeat(3,1fr)}}
 @media (max-width:460px){.sync-grid{grid-template-columns:1fr 1fr}}
+
+/* ---------- 员工管理 ---------- */
+.form-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px 16px}
+@media (max-width:640px){.form-grid{grid-template-columns:1fr}}
+.role-list{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:8px}
+@media (max-width:640px){.role-list{grid-template-columns:1fr}}
+.role-item{display:flex;gap:9px;align-items:flex-start;padding:10px 12px;border:1px solid var(--line,#e8e5e2);border-radius:11px;cursor:pointer;background:#fff;transition:.15s}
+.role-item:hover{border-color:var(--rose,#d98b9a);background:#fffafb}
+.role-item input{margin-top:3px;accent-color:var(--rose,#d98b9a)}
+.role-item strong{font-size:13px}
+.role-item .td-sub{margin-top:2px;line-height:1.5}
+.chk-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:6px 10px}
+@media (max-width:760px){.chk-grid{grid-template-columns:repeat(2,1fr)}}
+.chk-line{display:flex;gap:7px;align-items:center;font-size:13px;padding:5px 0;cursor:pointer}
+.chk-line input{accent-color:var(--rose,#d98b9a);width:15px;height:15px}
+#sfCustomBox{border-top:1px dashed var(--line,#e8e5e2);margin-top:10px;padding-top:4px}

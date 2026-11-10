@@ -28,12 +28,13 @@
     { key: 'm:agents', title: '代理', icon: '🤝', sub: '代理档案与上下级' },
     { key: 'm:orders', title: '拿货', icon: '🧾', sub: '拿货与结算' },
     { group: '营销' },
-    { key: 'recharge', title: '充值卡', icon: '💳', sub: '批量生成卡号卡密，App 内直接充值' },
+    { key: 'recharge', title: '充值卡', icon: '💳', cap: 'recharge', sub: '批量生成卡号卡密，App 内直接充值' },
     { key: 'm:wallet', title: '钱包流水', icon: '📒', sub: '充值、消费、调整的完整流水' },
     { group: '系统' },
-    { key: 'sms', title: '短信', icon: '✉️', sub: '多家短信通道与发送记录' },
-    { key: 'backup', title: '数据备份', icon: '💾', sub: '一键导出全部数据与图片' },
-    { key: 'settings', title: '系统设置', icon: '⚙️', sub: '店铺、安装包、开关' }
+    { key: 'staff', title: '员工管理', icon: '🧑‍💼', cap: 'staff', sub: '加员工、设岗位、分权限' },
+    { key: 'sms', title: '短信', icon: '✉️', cap: 'sms', sub: '多家短信通道与发送记录' },
+    { key: 'backup', title: '数据备份', icon: '💾', cap: 'backup', sub: '一键导出全部数据与图片' },
+    { key: 'settings', title: '系统设置', icon: '⚙️', cap: 'settings', sub: '店铺、安装包、开关' }
   ];
 
   var $ = function (id) { return document.getElementById(id); };
@@ -218,12 +219,14 @@
 
   async function enter(admin, skipReload) {
     state.admin = admin;
+    state.perm = admin.perm || { role: 'viewer', label: '只读', modules: [], caps: {} };
+    window.CAN_WRITE_FLAG = !!((state.perm.caps || {}).write);
     $('authView').hidden = true;
     if ($('signupView')) $('signupView').hidden = true;
     $('appView').hidden = false;
     $('userEmail').textContent = admin.email || admin.name;
     $('userAvatar').textContent = (admin.name || admin.email || 'A').slice(0, 1).toUpperCase();
-    $('userRole').textContent = admin.role === 'owner' ? '店主管理员' : '员工';
+    $('userRole').textContent = state.perm.label || '员工';
     try {
       var s = await API.get('settings/get');
       state.settings = s || {};
@@ -237,13 +240,49 @@
     route();
   }
 
+  /* ---------------- 权限判断 ---------------- */
+
+  function canModule(m) {
+    var p = state.perm || {};
+    return (p.modules || []).indexOf(m) >= 0;
+  }
+  function canCap(c) {
+    var p = state.perm || {};
+    return !!(p.caps || {})[c];
+  }
+  function canWrite() { return canCap('write'); }
+
+  /* 菜单项能不能显示：带 cap 的看能力，带 m: 的看模块，其余默认可见 */
+  function navAllowed(n) {
+    if (n.cap) return canCap(n.cap);
+    if (n.key && n.key.indexOf('m:') === 0) return canModule(n.key.slice(2));
+    return true;
+  }
+
   function buildNav() {
     var nav = $('nav');
-    nav.innerHTML = NAV.map(function (n) {
-      if (n.group) return '<div class="nav-group">' + UI.esc(n.group) + '</div>';
-      return '<button class="nav-item" data-key="' + n.key + '">' +
-        '<span class="ico">' + n.icon + '</span>' + UI.esc(n.title) + '</button>';
-    }).join('');
+
+    /* 先按权限过滤出可见项 */
+    var visible = NAV.filter(function (n) { return n.group || navAllowed(n); });
+
+    /* 去掉后面没有子项的空分组 */
+    var out = [];
+    for (var i = 0; i < visible.length; i++) {
+      var n = visible[i];
+      if (n.group) {
+        var hasChild = false;
+        for (var j = i + 1; j < visible.length; j++) {
+          if (visible[j].group) break;
+          hasChild = true;
+          break;
+        }
+        if (hasChild) out.push('<div class="nav-group">' + UI.esc(n.group) + '</div>');
+        continue;
+      }
+      out.push('<button class="nav-item" data-key="' + n.key + '">' +
+        '<span class="ico">' + n.icon + '</span>' + UI.esc(n.title) + '</button>');
+    }
+    nav.innerHTML = out.join('');
     nav.querySelectorAll('.nav-item').forEach(function (btn) {
       btn.onclick = function () {
         location.hash = '#/' + btn.getAttribute('data-key');
@@ -259,6 +298,16 @@
 
   async function route() {
     var nav = currentNav();
+    /* 手动改 hash 想进没权限的页面，直接挡回去 */
+    if (!navAllowed(nav)) {
+      var fallback = NAV.filter(function (n) { return !n.group && navAllowed(n); })[0];
+      if (fallback && fallback.key !== nav.key) {
+        location.hash = '#/' + fallback.key;
+        return;
+      }
+      $('view').innerHTML = UI.empty('当前账号没有可访问的页面，请联系店主开通权限');
+      return;
+    }
     $('pageTitle').textContent = nav.title;
     $('pageSub').textContent = nav.sub || '';
     document.querySelectorAll('.nav-item').forEach(function (b) {
@@ -273,6 +322,7 @@
     if (nav.key === 'backup') return renderBackup(view);
     if (nav.key === 'sms') return renderSms(view);
     if (nav.key === 'settings') return renderSettings(view);
+    if (nav.key === 'staff') return renderStaff(view);
     if (nav.key.indexOf('m:') === 0) return CRUD.render(view, nav.key.slice(2));
   }
 
@@ -1455,6 +1505,247 @@
     } catch (e) {
       view.innerHTML = UI.empty(e.message, '⚠️');
     }
+  }
+
+  /* ---------------- 员工管理 ---------------- */
+
+  var ROLE_CACHE = null;
+  var MODULE_LABEL = {
+    packages: '套餐', members: '会员', mentors: '导师', products: '产品', agents: '代理',
+    orders: '拿货', customers: '客户', photos: '相册', compares: '对比图', payments: '收款',
+    subs: '套餐开通', wallet: '钱包流水', appointments: '预约', steps: '护理步骤',
+    notes: '客户笔记', claims: '产品领用'
+  };
+  var CAP_LABEL = {
+    write: '允许修改数据', staff: '员工管理', settings: '系统设置',
+    backup: '数据备份', sms: '短信通道', recharge: '充值卡', sync: 'App 同步'
+  };
+
+  async function loadRoles() {
+    if (ROLE_CACHE) return ROLE_CACHE;
+    ROLE_CACHE = await API.get('staff/roles');
+    return ROLE_CACHE;
+  }
+
+  function permBadges(p) {
+    var caps = p.caps || {};
+    var out = [];
+    if (!caps.write) out.push('<span class="badge gray">只读</span>');
+    if (caps.staff) out.push('<span class="badge info">员工</span>');
+    if (caps.settings) out.push('<span class="badge info">设置</span>');
+    if (caps.recharge) out.push('<span class="badge info">充值</span>');
+    if (caps.backup) out.push('<span class="badge info">备份</span>');
+    if (caps.sms) out.push('<span class="badge info">短信</span>');
+    return out.join(' ');
+  }
+
+  async function renderStaff(view) {
+    try {
+      var rolesInfo = await loadRoles();
+      var roles = rolesInfo.roles || [];
+      var roleMap = {};
+      roles.forEach(function (r) { roleMap[r.key] = r; });
+
+      var rows = await API.get('staff/list');
+
+      var html = '<div class="toolbar">' +
+        '<div class="td-sub">共 ' + rows.length + ' 个账号 · 权限分「角色预设」和「单独调整」两层</div>' +
+        '<div style="flex:1"></div>' +
+        '<button class="btn primary" id="addStaff">+ 添加员工</button>' +
+        '</div>' +
+        '<div class="card" style="padding:0;overflow:hidden">' +
+        '<table class="table"><thead><tr>' +
+        '<th>姓名</th><th>账号</th><th>手机号</th><th>岗位</th><th>权限</th><th>状态</th><th>最近登录</th><th style="width:190px">操作</th>' +
+        '</tr></thead><tbody>' +
+        rows.map(function (r) {
+          var isMe = state.admin && r.id === state.admin.id;
+          return '<tr>' +
+            '<td><strong>' + UI.esc(r.name) + '</strong>' + (isMe ? ' <span class="badge info">我</span>' : '') +
+              (r.note ? '<div class="td-sub">' + UI.esc(r.note) + '</div>' : '') + '</td>' +
+            '<td class="td-sub">' + UI.esc(r.email || '—') + '</td>' +
+            '<td class="td-sub">' + UI.esc(r.phone || '—') + '</td>' +
+            '<td>' + UI.esc(r.role_label) + '</td>' +
+            '<td>' + permBadges(r.perm) + '</td>' +
+            '<td>' + UI.badge(r.status) + '</td>' +
+            '<td class="td-sub">' + UI.esc(r.last_login ? String(r.last_login).slice(0, 16) : '—') + '</td>' +
+            '<td>' +
+              '<button class="btn ghost sm" data-edit="' + r.id + '">编辑</button> ' +
+              '<button class="btn ghost sm" data-pwd="' + r.id + '">改密码</button> ' +
+              (isMe ? '' : '<button class="btn ghost sm" data-del="' + r.id + '">删除</button>') +
+            '</td>' +
+          '</tr>';
+        }).join('') +
+        '</tbody></table></div>';
+
+      view.innerHTML = html;
+
+      view.querySelector('#addStaff').onclick = function () { openStaffForm(null, roles, roleMap, view); };
+      view.querySelectorAll('[data-edit]').forEach(function (b) {
+        b.onclick = function () {
+          var id = +b.getAttribute('data-edit');
+          var row = rows.filter(function (x) { return x.id === id; })[0];
+          openStaffForm(row, roles, roleMap, view);
+        };
+      });
+      view.querySelectorAll('[data-pwd]').forEach(function (b) {
+        b.onclick = function () {
+          var id = +b.getAttribute('data-pwd');
+          var row = rows.filter(function (x) { return x.id === id; })[0];
+          openPasswordReset(row, view);
+        };
+      });
+      view.querySelectorAll('[data-del]').forEach(function (b) {
+        b.onclick = function () {
+          var id = +b.getAttribute('data-del');
+          var row = rows.filter(function (x) { return x.id === id; })[0];
+          UI.confirm('确定删除员工「' + row.name + '」？删除后该账号立即失效。', async function () {
+            try {
+              await API.post('staff/delete', { id: id });
+              UI.toast('已删除', 'ok');
+              renderStaff(view);
+            } catch (e) { UI.toast(e.message, 'bad'); }
+          });
+        };
+      });
+    } catch (e) {
+      view.innerHTML = UI.empty(e.message, '⚠️');
+    }
+  }
+
+  function openStaffForm(row, roles, roleMap, view) {
+    var isNew = !row;
+    var curRole = row ? row.role : 'therapist';
+    var curPerm = row ? (row.perm || {}) : null;
+
+    var body =
+      '<div class="form-grid">' +
+        '<label class="field"><span>姓名</span><input type="text" id="sfName" value="' + UI.esc(row ? row.name : '') + '" placeholder="张小美"></label>' +
+        '<label class="field"><span>账号（邮箱）</span><input type="text" id="sfEmail" value="' + UI.esc(row ? row.email : '') + '" placeholder="lily@meiyan.local"></label>' +
+        '<label class="field"><span>手机号</span><input type="text" id="sfPhone" value="' + UI.esc(row ? row.phone : '') + '" placeholder="选填"></label>' +
+        '<label class="field"><span>岗位备注</span><input type="text" id="sfNote" value="' + UI.esc(row ? row.note : '') + '" placeholder="如：美容师 1 号"></label>' +
+        (isNew ? '<label class="field"><span>初始密码（至少 6 位）</span><input type="text" id="sfPass" placeholder="员工首次登录用"></label>' : '') +
+        '<label class="field"><span>状态</span><select id="sfStatus">' +
+          '<option value="正常"' + (row && row.status === '正常' ? ' selected' : '') + '>正常</option>' +
+          '<option value="停用"' + (row && row.status === '停用' ? ' selected' : '') + '>停用</option>' +
+        '</select></label>' +
+      '</div>' +
+      '<div style="margin-top:6px"><strong style="font-size:13px">岗位角色</strong></div>' +
+      '<div class="role-list">' +
+        roles.map(function (r) {
+          return '<label class="role-item"><input type="radio" name="sfRole" value="' + r.key + '"' +
+            (curRole === r.key ? ' checked' : '') + '>' +
+            '<div><strong>' + UI.esc(r.label) + '</strong>' +
+            '<div class="td-sub">' + UI.esc(r.desc) + '</div></div></label>';
+        }).join('') +
+      '</div>' +
+      '<label class="chk-line" style="margin-top:10px"><input type="checkbox" id="sfCustom">' +
+        '<span>单独调整这个账号的权限（不勾选就完全按角色预设）</span></label>' +
+      '<div id="sfCustomBox" hidden>' +
+        '<div style="margin:10px 0 6px"><strong style="font-size:13px">能访问的模块</strong></div>' +
+        '<div class="chk-grid">' +
+          Object.keys(MODULE_LABEL).map(function (m) {
+            var on = curPerm && (curPerm.modules || []).indexOf(m) >= 0;
+            return '<label class="chk-line"><input type="checkbox" data-mod="' + m + '"' + (on ? ' checked' : '') + '>' +
+              '<span>' + MODULE_LABEL[m] + '</span></label>';
+          }).join('') +
+        '</div>' +
+        '<div style="margin:12px 0 6px"><strong style="font-size:13px">能做的操作</strong></div>' +
+        '<div class="chk-grid">' +
+          Object.keys(CAP_LABEL).map(function (c) {
+            var on = curPerm && (curPerm.caps || {})[c];
+            return '<label class="chk-line"><input type="checkbox" data-cap="' + c + '"' + (on ? ' checked' : '') + '>' +
+              '<span>' + CAP_LABEL[c] + '</span></label>';
+          }).join('') +
+        '</div>' +
+      '</div>';
+
+    var m = UI.modal({
+      title: isNew ? '添加员工' : '编辑员工 · ' + row.name,
+      wide: true,
+      body: body,
+      buttons: [
+        { label: '取消', kind: 'ghost', onClick: function (api) { api.close(); } },
+        {
+          label: isNew ? '添加' : '保存', kind: 'primary',
+          onClick: async function (api) {
+            var body2 = {
+              name: api.body.querySelector('#sfName').value.trim(),
+              email: api.body.querySelector('#sfEmail').value.trim(),
+              phone: api.body.querySelector('#sfPhone').value.trim(),
+              note: api.body.querySelector('#sfNote').value.trim(),
+              status: api.body.querySelector('#sfStatus').value,
+              role: (api.body.querySelector('input[name="sfRole"]:checked') || {}).value || 'therapist'
+            };
+            if (!body2.name) { UI.toast('请填写姓名', 'bad'); return; }
+            if (isNew) {
+              body2.password = api.body.querySelector('#sfPass').value;
+              if (!body2.password || body2.password.length < 6) { UI.toast('初始密码至少 6 位', 'bad'); return; }
+            } else {
+              body2.id = row.id;
+            }
+            if (api.body.querySelector('#sfCustom').checked) {
+              body2.modules = [];
+              api.body.querySelectorAll('[data-mod]').forEach(function (c) {
+                if (c.checked) body2.modules.push(c.getAttribute('data-mod'));
+              });
+              body2.caps = {};
+              api.body.querySelectorAll('[data-cap]').forEach(function (c) {
+                body2.caps[c.getAttribute('data-cap')] = c.checked ? 1 : 0;
+              });
+            }
+            api.setBusy(true);
+            try {
+              await API.post('staff/save', body2);
+              UI.toast(isNew ? '员工已添加' : '已保存', 'ok');
+              api.close();
+              renderStaff(view);
+            } catch (e) {
+              UI.toast(e.message, 'bad');
+              api.setBusy(false);
+            }
+          }
+        }
+      ]
+    });
+
+    var chk = m.body.querySelector('#sfCustom');
+    var box = m.body.querySelector('#sfCustomBox');
+    if (curPerm && !isNew) {
+      /* 已有单独权限的就自动展开 */
+      var preset = roleMap[curRole];
+      var same = preset && JSON.stringify(preset.modules) === JSON.stringify(curPerm.modules || []);
+      if (!same) { chk.checked = true; box.hidden = false; }
+    }
+    chk.onchange = function () { box.hidden = !chk.checked; };
+  }
+
+  function openPasswordReset(row, view) {
+    var m = UI.modal({
+      title: '重置密码 · ' + row.name,
+      body: '<label class="field"><span>新密码（至少 6 位）</span>' +
+            '<input type="text" id="npw" placeholder="告诉员工后请其自行修改"></label>',
+      buttons: [
+        { label: '取消', kind: 'ghost', onClick: function (api) { api.close(); } },
+        {
+          label: '重置', kind: 'primary',
+          onClick: async function (api) {
+            var v = api.body.querySelector('#npw').value;
+            if (!v || v.length < 6) { UI.toast('新密码至少 6 位', 'bad'); return; }
+            api.setBusy(true);
+            try {
+              await API.post('staff/password', { id: row.id, password: v });
+              UI.toast('密码已重置', 'ok');
+              api.close();
+              renderStaff(view);
+            } catch (e) {
+              UI.toast(e.message, 'bad');
+              api.setBusy(false);
+            }
+          }
+        }
+      ]
+    });
+    setTimeout(function () { try { m.body.querySelector('#npw').focus(); } catch (e) {} }, 60);
   }
 
   /* ---------------- 启动 ---------------- */

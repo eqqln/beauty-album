@@ -434,15 +434,28 @@ final class CloudAPI {
         return raw as? [String: Any] ?? [:]
     }
 
-    /// 上传一张图片，返回可访问 URL
+    /// 上传一个文件（图片或视频），返回可访问 URL
     func uploadImage(_ data: Data, fileName: String, token: String) async throws -> String {
         guard let url = URL(string: endpoint + "?r=upload") else {
             throw CloudError.message("服务器地址不正确")
         }
+        let ext = (fileName as NSString).pathExtension.lowercased()
+        let isVideo = ["mp4", "mov", "m4v", "qt"].contains(ext)
+        let mime: String
+        switch ext {
+        case "mp4", "m4v": mime = "video/mp4"
+        case "mov", "qt":  mime = "video/quicktime"
+        case "png":        mime = "image/png"
+        case "gif":        mime = "image/gif"
+        case "webp":       mime = "image/webp"
+        default:           mime = "image/jpeg"
+        }
+
         let boundary = "Boundary-\(UUID().uuidString)"
         var req = URLRequest(url: url)
         req.httpMethod = "POST"
-        req.timeoutInterval = 60
+        // 视频动辄几十上百 MB，60 秒会超时
+        req.timeoutInterval = isVideo ? 900 : 90
         req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         req.setValue("multipart/form-data; boundary=\(boundary)",
                      forHTTPHeaderField: "Content-Type")
@@ -451,14 +464,32 @@ final class CloudAPI {
         body.append("--\(boundary)\r\n".data(using: .utf8)!)
         body.append("Content-Disposition: form-data; name=\"file\"; filename=\"\(fileName)\"\r\n"
                         .data(using: .utf8)!)
-        body.append("Content-Type: image/jpeg\r\n\r\n".data(using: .utf8)!)
+        body.append("Content-Type: \(mime)\r\n\r\n".data(using: .utf8)!)
         body.append(data)
         body.append("\r\n--\(boundary)--\r\n".data(using: .utf8)!)
-        req.httpBody = body
+
+        let cfg = URLSessionConfiguration.default
+        cfg.timeoutIntervalForRequest = isVideo ? 900 : 90
+        cfg.timeoutIntervalForResource = isVideo ? 1800 : 180
+        let session = URLSession(configuration: cfg)
+
+        // 大文件（视频）落盘再流式上传，避免 multipart 在内存里翻倍把 App 撑爆
+        var tmpURL: URL?
+        defer { if let t = tmpURL { try? FileManager.default.removeItem(at: t) } }
 
         let respData: Data
         do {
-            (respData, _) = try await URLSession.shared.data(for: req)
+            if body.count > 24 * 1024 * 1024 {
+                let t = FileManager.default.temporaryDirectory
+                    .appendingPathComponent("up-\(UUID().uuidString).part")
+                try body.write(to: t)
+                tmpURL = t
+                body = Data()   // 及时释放
+                (respData, _) = try await session.upload(for: req, fromFile: t)
+            } else {
+                req.httpBody = body
+                (respData, _) = try await session.data(for: req)
+            }
         } catch {
             throw CloudError.network
         }
@@ -466,7 +497,7 @@ final class CloudAPI {
               (obj["ok"] as? Bool) == true,
               let d = obj["data"] as? [String: Any],
               let path = d["url"] as? String else {
-            throw CloudError.message("图片上传失败")
+            throw CloudError.message(isVideo ? "视频上传失败" : "图片上传失败")
         }
         return path
     }

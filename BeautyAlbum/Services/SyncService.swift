@@ -35,11 +35,14 @@ final class SyncService: ObservableObject {
     private let kTouch = "sync.touch"
     private let kImg   = "sync.imgurl"
     private let kDirty = "sync.dirty"
+    private let kSnap  = "sync.snapshot"
     /// 店铺设置这条记录的固定 uid
     static let shopUID = "00000000-0000-4000-8000-000000000001"
 
     /// "模块|uid" → 本地最后改动时间
     private var localTouch: [String: Date] = [:]
+    /// "模块|uid" → 上一次与云端一致时的整行快照，用来算"这次到底改了哪几个字段"
+    private var snapshots: [String: [String: Any]] = [:]
     /// "clientUUID/文件名" → 云端 URL
     private var imageURLs: [String: String] = [:]
     /// 有本地改动待推送的模块
@@ -68,6 +71,74 @@ final class SyncService: ObservableObject {
         if let raw = UserDefaults.standard.array(forKey: kDirty) as? [String] {
             dirtyModules = Set(raw)
         }
+        loadSnapshots()
+    }
+
+    // MARK: 字段级快照（用于算"这次改了哪几个字段"）
+
+    private func loadSnapshots() {
+        guard let s = UserDefaults.standard.string(forKey: kSnap),
+              let d = s.data(using: .utf8),
+              let obj = try? JSONSerialization.jsonObject(with: d),
+              let map = obj as? [String: [String: Any]] else { return }
+        snapshots = map
+    }
+
+    private func saveSnapshots() {
+        guard JSONSerialization.isValidJSONObject(snapshots),
+              let d = try? JSONSerialization.data(withJSONObject: snapshots),
+              let s = String(data: d, encoding: .utf8) else { return }
+        UserDefaults.standard.set(s, forKey: kSnap)
+    }
+
+    /// 把两个任意值转成可比较的字符串（NSNumber 3 与 Int 3 要算相等）
+    private static func canonical(_ v: Any?) -> String {
+        guard let v = v else { return "\u{0}nil" }
+        if let d = try? JSONSerialization.data(withJSONObject: [v], options: [.sortedKeys]),
+           let s = String(data: d, encoding: .utf8) {
+            return s
+        }
+        return "raw:" + String(describing: v)
+    }
+
+    /// 算这一行里哪些字段跟上次一致状态不同，返回 [字段: 时间]
+    private func fieldTimestamps(module: String, uid: String, row: [String: Any], rowTs: String) -> [String: String] {
+        guard !uid.isEmpty else { return [:] }
+        let key = module + "|" + uid
+        let skip: Set<String> = ["uid", "field_ts", "updated_at", "created_at"]
+
+        guard let old = snapshots[key] else {
+            /* 第一次同步这条：所有字段都当作新写的 */
+            var out: [String: String] = [:]
+            for k in row.keys where !skip.contains(k) { out[k] = rowTs }
+            return out
+        }
+
+        let nowIso = Self.iso(Date())
+        var out: [String: String] = [:]
+        for (k, v) in row where !skip.contains(k) {
+            if Self.canonical(old[k]) != Self.canonical(v) {
+                out[k] = nowIso
+            }
+        }
+        return out
+    }
+
+    /// 同步完成后刷新快照：以当前本地状态为准
+    private func refreshSnapshots(store: Store) {
+        let mods = ["customers", "photos", "steps", "notes", "claims", "payments",
+                    "appointments", "compares", "teachers", "products", "agents", "agent_orders"]
+        var next: [String: [String: Any]] = [:]
+        for m in mods {
+            for row in buildPayload(module: m, store: store) {
+                guard let uid = row["uid"] as? String, !uid.isEmpty else { continue }
+                var clean = row
+                clean.removeValue(forKey: "field_ts")
+                next[m + "|" + uid] = clean
+            }
+        }
+        snapshots = next
+        saveSnapshots()
     }
 
     // MARK: 改动登记（由 Store 调用）
@@ -304,13 +375,28 @@ final class SyncService: ObservableObject {
                 var payload: [String: Any] = [:]
                 for m in dirtyModules {
                     let rows = buildPayload(module: m, store: store)
-                    if !rows.isEmpty { payload[m] = rows }
+                    if rows.isEmpty { continue }
+                    if m == "settings" {
+                        payload[m] = rows
+                        continue
+                    }
+                    /* 给每一行算字段级时间戳：只把这次真改过的字段标成"现在"，
+                       没改的字段不带，服务端就不会覆盖别人对那几列的修改 */
+                    payload[m] = rows.map { row -> [String: Any] in
+                        var r = row
+                        let uid = (r["uid"] as? String) ?? ""
+                        let ts = (r["updated_at"] as? String) ?? Self.iso(Date())
+                        let fts = fieldTimestamps(module: m, uid: uid, row: r, rowTs: ts)
+                        if !fts.isEmpty { r["field_ts"] = fts }
+                        return r
+                    }
                 }
                 if !payload.isEmpty {
                     _ = try await CloudAPI.shared.syncPush(payload, token: token)
                 }
                 dirtyModules.removeAll()
                 UserDefaults.standard.set([String](), forKey: kDirty)
+                refreshSnapshots(store: store)
             }
 
             guard doPull else {
@@ -334,6 +420,7 @@ final class SyncService: ObservableObject {
             lastSyncAt = serverTime
             UserDefaults.standard.set(serverTime.timeIntervalSince1970, forKey: kMark)
             flushImages()
+            refreshSnapshots(store: store)
 
             lastSummary = changed.isEmpty
                 ? "已是最新"
@@ -371,7 +458,8 @@ final class SyncService: ObservableObject {
             for c in store.clients {
                 for p in c.photos {
                     let key = "\(c.id.uuidString)/\(p.fileName)"
-                    out.append([
+                    let thumbKey = "\(c.id.uuidString)/\(p.thumbName)"
+                    var row: [String: Any] = [
                         "uid": p.id.uuidString,
                         "client_uid": c.id.uuidString,
                         "phase": p.phase == .before ? "使用前" : "使用后",
@@ -379,9 +467,19 @@ final class SyncService: ObservableObject {
                         "caption": p.caption,
                         "file_name": p.fileName,
                         "url": imageURLs[key] ?? "",
+                        "kind": p.kind.rawValue,
+                        "duration": p.duration,
+                        "thumb_name": p.thumbName,
                         "created_at": Self.iso(p.createdAt),
                         "updated_at": Self.iso(touchDate("photos", p.id, fallback: p.createdAt))
-                    ])
+                    ]
+                    if p.isVideo {
+                        row["thumb_url"] = imageURLs[thumbKey] ?? ""
+                        let size = (try? FileManager.default.attributesOfItem(
+                            atPath: store.photoURL(clientID: c.id, fileName: p.fileName).path))?[.size] as? NSNumber
+                        row["size_bytes"] = size?.int64Value ?? 0
+                    }
+                    out.append(row)
                 }
             }
             return out
@@ -641,24 +739,39 @@ final class SyncService: ObservableObject {
                 let phase: PhotoPhase = str(r, "phase").contains("后") ? .after : .before
                 let url = str(r, "url")
                 let fname = str(r, "file_name")
+                let kind: PhotoKind = str(r, "kind") == "video" ? .video : .image
+                let dur = (r["duration"] as? NSNumber)?.doubleValue ?? 0
+                let thumb = str(r, "thumb_name")
+                let thumbUrl = str(r, "thumb_url")
 
                 if let pi = store.clients[ci].photos.firstIndex(where: { $0.id == uid }) {
                     if isLocalNewer("photos", uid, server: r) { continue }
                     store.clients[ci].photos[pi].tag = str(r, "tag")
                     store.clients[ci].photos[pi].caption = str(r, "caption")
                     store.clients[ci].photos[pi].phase = phase
+                    store.clients[ci].photos[pi].kind = kind
+                    if dur > 0 { store.clients[ci].photos[pi].duration = dur }
+                    if !thumb.isEmpty { store.clients[ci].photos[pi].thumbName = thumb }
                 } else {
                     var p = PhotoItem()
                     p.id = uid
-                    p.fileName = fname.isEmpty ? "\(uid.uuidString).jpg" : fname
+                    p.fileName = fname.isEmpty
+                        ? "\(uid.uuidString).\(kind == .video ? "mp4" : "jpg")"
+                        : fname
                     p.phase = phase
                     p.tag = str(r, "tag")
                     p.caption = str(r, "caption")
                     p.createdAt = date(r, "created_at") ?? Date()
+                    p.kind = kind
+                    p.duration = dur
+                    p.thumbName = thumb
                     store.clients[ci].photos.append(p)
                 }
                 if !url.isEmpty, !fname.isEmpty {
                     imageURLs["\(cuid.uuidString)/\(fname)"] = url
+                }
+                if !thumbUrl.isEmpty, !thumb.isEmpty {
+                    imageURLs["\(cuid.uuidString)/\(thumb)"] = thumbUrl
                 }
                 stamp("photos", uid, r)
                 n += 1
@@ -1131,12 +1244,26 @@ final class SyncService: ObservableObject {
         for c in store.clients {
             for p in c.photos {
                 let key = "\(c.id.uuidString)/\(p.fileName)"
-                if let u = imageURLs[key], !u.isEmpty { continue }
-                let url = store.photoURL(clientID: c.id, fileName: p.fileName)
-                guard let data = try? Data(contentsOf: url), !data.isEmpty else { continue }
-                if data.count > 11 * 1024 * 1024 { continue }
-                if let path = try? await CloudAPI.shared.uploadImage(data, fileName: p.fileName, token: token) {
-                    imageURLs[key] = path
+                let limit: Int = p.isVideo ? 200 * 1024 * 1024 : 11 * 1024 * 1024
+                if imageURLs[key]?.isEmpty ?? true {
+                    let url = store.photoURL(clientID: c.id, fileName: p.fileName)
+                    if let data = try? Data(contentsOf: url), !data.isEmpty, data.count <= limit {
+                        if let path = try? await CloudAPI.shared.uploadImage(data, fileName: p.fileName, token: token) {
+                            imageURLs[key] = path
+                        }
+                    }
+                }
+                /* 视频封面单独传一份，后台和别的设备靠它显示缩略图 */
+                if p.isVideo, !p.thumbName.isEmpty {
+                    let tk = "\(c.id.uuidString)/\(p.thumbName)"
+                    if imageURLs[tk]?.isEmpty ?? true {
+                        let turl = store.photoURL(clientID: c.id, fileName: p.thumbName)
+                        if let data = try? Data(contentsOf: turl), !data.isEmpty,
+                           data.count <= 11 * 1024 * 1024,
+                           let path = try? await CloudAPI.shared.uploadImage(data, fileName: p.thumbName, token: token) {
+                            imageURLs[tk] = path
+                        }
+                    }
                 }
             }
         }
@@ -1187,14 +1314,26 @@ final class SyncService: ObservableObject {
             for p in c.photos where !p.fileName.isEmpty {
                 let key = "\(c.id.uuidString)/\(p.fileName)"
                 let local = store.photoURL(clientID: c.id, fileName: p.fileName)
-                if FileManager.default.fileExists(atPath: local.path) { continue }
-                guard let path = imageURLs[key], !path.isEmpty else { continue }
-                let full = path.hasPrefix("http") ? path : (CloudAPI.shared.baseURL + path)
-                guard let u = URL(string: full) else { continue }
-                guard let (data, _) = try? await URLSession.shared.data(from: u) else { continue }
-                let dir = store.clientDirectory(c.id)
-                try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-                try? data.write(to: local)
+                if !FileManager.default.fileExists(atPath: local.path),
+                   let path = imageURLs[key], !path.isEmpty,
+                   let data = await fetchImage(path) {
+                    try? FileManager.default.createDirectory(at: store.clientDirectory(c.id),
+                                                             withIntermediateDirectories: true)
+                    try? data.write(to: local)
+                }
+                /* 视频封面 */
+                if p.isVideo, !p.thumbName.isEmpty {
+                    let tkey = "\(c.id.uuidString)/\(p.thumbName)"
+                    let tlocal = store.photoURL(clientID: c.id, fileName: p.thumbName)
+                    if !FileManager.default.fileExists(atPath: tlocal.path),
+                       let path = imageURLs[tkey], !path.isEmpty,
+                       let data = await fetchImage(path) {
+                        try? FileManager.default.createDirectory(at: store.clientDirectory(c.id),
+                                                                 withIntermediateDirectories: true)
+                        try? data.write(to: tlocal)
+                        ImageCache.shared.remove(tlocal)
+                    }
+                }
             }
         }
     }

@@ -10,27 +10,56 @@ enum PhotoPhase: String, Codable, CaseIterable, Identifiable {
     var id: String { rawValue }
 }
 
-// MARK: - 照片
+// MARK: - 媒体类型（照片 / 视频）
+
+enum PhotoKind: String, Codable, CaseIterable {
+    case image
+    case video
+
+    var isVideo: Bool { self == .video }
+    var label: String { self == .video ? "视频" : "照片" }
+}
+
+// MARK: - 照片 / 视频
 
 struct PhotoItem: Codable, Identifiable, Hashable {
     var id: UUID = UUID()
-    /// 磁盘上的文件名，格式为 "<photoID>.jpg"，位于 media/<clientID>/ 下
+    /// 磁盘上的文件名。照片是 "<photoID>.jpg"，视频是 "<photoID>.mp4"，都放在 media/<clientID>/ 下
     var fileName: String = ""
     var phase: PhotoPhase = .before
     /// 部位 / 项目标签，例如「面部」「颈部」
     var tag: String = ""
-    /// 单张照片的备注
+    /// 单条备注
     var caption: String = ""
     var createdAt: Date = Date()
+    /// 照片还是视频
+    var kind: PhotoKind = .image
+    /// 视频时长（秒），照片为 0
+    var duration: Double = 0
+    /// 视频封面图文件名（jpg），照片为空
+    var thumbName: String = ""
+
+    var isVideo: Bool { kind == .video }
+
+    /// 列表上显示用：视频显示 0:12
+    var durationText: String {
+        guard isVideo, duration > 0 else { return "" }
+        let total = Int(duration.rounded())
+        return String(format: "%d:%02d", total / 60, total % 60)
+    }
 
     init(id: UUID = UUID(), fileName: String = "", phase: PhotoPhase = .before,
-         tag: String = "", caption: String = "", createdAt: Date = Date()) {
+         tag: String = "", caption: String = "", createdAt: Date = Date(),
+         kind: PhotoKind = .image, duration: Double = 0, thumbName: String = "") {
         self.id = id
         self.fileName = fileName
         self.phase = phase
         self.tag = tag
         self.caption = caption
         self.createdAt = createdAt
+        self.kind = kind
+        self.duration = duration
+        self.thumbName = thumbName
     }
 
     init(from decoder: Decoder) throws {
@@ -41,6 +70,9 @@ struct PhotoItem: Codable, Identifiable, Hashable {
         tag = try c.decodeIfPresent(String.self, forKey: .tag) ?? ""
         caption = try c.decodeIfPresent(String.self, forKey: .caption) ?? ""
         createdAt = try c.decodeIfPresent(Date.self, forKey: .createdAt) ?? Date()
+        kind = try c.decodeIfPresent(PhotoKind.self, forKey: .kind) ?? .image
+        duration = try c.decodeIfPresent(Double.self, forKey: .duration) ?? 0
+        thumbName = try c.decodeIfPresent(String.self, forKey: .thumbName) ?? ""
     }
 }
 

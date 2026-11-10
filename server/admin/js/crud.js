@@ -98,7 +98,7 @@
                 UI.esc(a.label) + '</button> ';
       });
     }
-    if (!mod.readonly) {
+    if (!mod.readonly && CAN_WRITE()) {
       acts += '<button class="btn sm ghost" data-edit="' + row.id + '">编辑</button> ' +
               '<button class="btn sm danger" data-del="' + row.id + '">删除</button>';
     }
@@ -253,7 +253,8 @@
         '<input class="search" id="kwInput" placeholder="搜索 ' + UI.esc(mod.title) + '" value="' + UI.esc(st.kw) + '">' +
         '<div style="flex:1"></div>' +
         (mod.readonly ? '<span class="td-sub">只读记录</span>'
-                      : '<button class="btn primary" id="addBtn">+ 新建' + UI.esc(mod.title) + '</button>') +
+                      : (CAN_WRITE() ? '<button class="btn primary" id="addBtn">+ 新建' + UI.esc(mod.title) + '</button>'
+                                     : '<span class="td-sub">当前账号只读，不能新建</span>')) +
       '</div>' +
       '<div class="card" style="padding:0;overflow:hidden"><div id="tableWrap">' + UI.loading() + '</div></div>' +
       '<div id="pager" style="margin-top:14px;display:flex;gap:8px;align-items:center;justify-content:flex-end"></div>';
@@ -370,6 +371,11 @@
       ]
     });
     return m;
+  }
+
+  /* 写权限：由 app.js 在登录后写入 window.CAN_WRITE_FLAG，默认允许（兼容旧页面） */
+  function CAN_WRITE() {
+    return window.CAN_WRITE_FLAG !== false;
   }
 
   window.CRUD = { render: render, openForm: openForm, clearOptionCache: clearOptionCache, loadOptions: loadOptions };

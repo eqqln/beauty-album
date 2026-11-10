@@ -54,6 +54,9 @@ function admin_out(array $a): array
         'phone' => $a['phone'],
         'name' => $a['name'] ?: ($a['email'] ?: '管理员'),
         'role' => $a['role'],
+        'status' => $a['status'] ?? '正常',
+        'note' => $a['note'] ?? '',
+        'perm' => function_exists('perm_out') ? perm_out($a) : null,
     ];
 }
 

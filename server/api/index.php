@@ -21,6 +21,7 @@ if (($_SERVER['REQUEST_METHOD'] ?? '') === 'OPTIONS') {
 
 require __DIR__ . '/lib/util.php';
 require __DIR__ . '/lib/db.php';
+require __DIR__ . '/lib/perm.php';
 require __DIR__ . '/lib/auth.php';
 require __DIR__ . '/lib/sms.php';
 require __DIR__ . '/lib/recharge.php';
@@ -105,11 +106,12 @@ function modules(): array
         ],
         'photos' => [
             'table' => 'photos',
-            'fields' => ['customer_id', 'phase', 'url', 'note'],
-            'search' => ['note', 'phase'],
+            'fields' => ['customer_id', 'client_uid', 'phase', 'url', 'note', 'tag', 'file_name',
+                         'kind', 'duration', 'thumb_name', 'thumb_url'],
+            'search' => ['note', 'phase', 'tag', 'file_name'],
             'order' => 'id DESC',
             'ints' => ['customer_id'],
-            'floats' => [],
+            'floats' => ['duration'],
         ],
         'compares' => [
             'table' => 'compares',
@@ -257,7 +259,7 @@ try {
             if ($st->fetchColumn()) fail('该邮箱已注册');
 
             $st = db()->prepare('INSERT INTO admins(email,name,pass_hash,role,status,created_at) VALUES(?,?,?,?,?,?)');
-            $st->execute([$email, $name ?: explode('@', $email)[0], password_hash($pass, PASSWORD_DEFAULT), $cnt === 0 ? 'owner' : 'staff', '正常', now()]);
+            $st->execute([$email, $name ?: explode('@', $email)[0], password_hash($pass, PASSWORD_DEFAULT), $cnt === 0 ? 'owner' : 'therapist', '正常', now()]);
             $id = (int)db()->lastInsertId();
             if ($cnt === 0) setting_set('admin_invite', substr(bin2hex(random_bytes(4)), 0, 8));
 
@@ -312,6 +314,134 @@ try {
             if (strlen($new) < 6) fail('新密码至少 6 位');
             db()->prepare('UPDATE admins SET pass_hash=? WHERE id=?')->execute([password_hash($new, PASSWORD_DEFAULT), $a['id']]);
             ok(null, '密码已修改');
+        }
+
+        /* =====================================================
+           员工管理（仅店主 / 有 staff 权限的账号）
+           ===================================================== */
+        case 'staff/roles': {
+            $a = admin_required();
+            $out = [];
+            foreach (perm_roles() as $k => $v) {
+                $out[] = ['key' => $k, 'label' => $v['label'], 'desc' => $v['desc'],
+                          'modules' => $v['modules'], 'caps' => $v['caps']];
+            }
+            ok(['roles' => $out, 'modules' => perm_modules_all()]);
+        }
+
+        case 'staff/list': {
+            $a = admin_required();
+            perm_check_cap($a, 'staff');
+            $rows = db()->query('SELECT * FROM admins ORDER BY id ASC')->fetchAll();
+            $out = [];
+            foreach ($rows as $row) {
+                $out[] = [
+                    'id' => (int)$row['id'],
+                    'email' => $row['email'],
+                    'phone' => $row['phone'],
+                    'name' => $row['name'] ?: $row['email'],
+                    'role' => perm_normalize_role((string)$row['role']),
+                    'role_label' => perm_of($row)['label'],
+                    'note' => $row['note'] ?? '',
+                    'status' => $row['status'],
+                    'created_at' => $row['created_at'],
+                    'last_login' => $row['last_login'],
+                    'perm' => perm_out($row),
+                ];
+            }
+            ok($out);
+        }
+
+        case 'staff/save': {
+            $a = admin_required();
+            perm_check_cap($a, 'staff');
+            $b = body();
+            $id = (int)($b['id'] ?? 0);
+            $email = trim((string)($b['email'] ?? ''));
+            $name = trim((string)($b['name'] ?? ''));
+            $phone = trim((string)($b['phone'] ?? ''));
+            $role = perm_normalize_role((string)($b['role'] ?? 'therapist'));
+            $note = trim((string)($b['note'] ?? ''));
+            $status = (string)($b['status'] ?? '正常');
+            if ($status !== '正常' && $status !== '停用') $status = '正常';
+
+            /* 自定义权限：只在传了 modules/caps 时才写，否则清空走角色预设 */
+            $permsJson = null;
+            if (isset($b['modules']) && is_array($b['modules'])) {
+                $caps = [];
+                foreach (['write', 'staff', 'settings', 'backup', 'sms', 'recharge', 'sync'] as $k) {
+                    $caps[$k] = !empty($b['caps'][$k]);
+                }
+                $permsJson = json_encode([
+                    'modules' => array_values(array_intersect(array_map('strval', $b['modules']), perm_modules_all())),
+                    'caps' => $caps,
+                ], JSON_UNESCAPED_UNICODE);
+            }
+
+            if ($id > 0) {
+                $st = db()->prepare('SELECT * FROM admins WHERE id=?');
+                $st->execute([$id]);
+                $old = $st->fetch();
+                if (!$old) fail('账号不存在', 404);
+                if ((int)$old['id'] === (int)$a['id'] && $role !== 'owner' && perm_normalize_role((string)$old['role']) === 'owner') {
+                    fail('不能把自己降级，请用另一个店主账号操作');
+                }
+                if ($email !== '' && $email !== $old['email']) {
+                    $chk = db()->prepare('SELECT id FROM admins WHERE email=? AND id<>?');
+                    $chk->execute([$email, $id]);
+                    if ($chk->fetchColumn()) fail('该邮箱已被占用');
+                }
+                $sql = 'UPDATE admins SET email=?, name=?, phone=?, role=?, note=?, status=?, perms=? WHERE id=?';
+                db()->prepare($sql)->execute([
+                    $email !== '' ? $email : $old['email'], $name, $phone, $role, $note, $status, $permsJson, $id
+                ]);
+                ok(['id' => $id], '已保存');
+            }
+
+            if ($email === '' || !filter_var($email, FILTER_VALIDATE_EMAIL)) fail('请填写正确的邮箱');
+            $pass = (string)($b['password'] ?? '');
+            if (strlen($pass) < 6) fail('初始密码至少 6 位');
+            $chk = db()->prepare('SELECT id FROM admins WHERE email=?');
+            $chk->execute([$email]);
+            if ($chk->fetchColumn()) fail('该邮箱已存在');
+            db()->prepare('INSERT INTO admins(email,name,phone,pass_hash,role,perms,note,status,created_at) VALUES(?,?,?,?,?,?,?,?,?)')
+               ->execute([$email, $name ?: explode('@', $email)[0], $phone,
+                          password_hash($pass, PASSWORD_DEFAULT), $role, $permsJson, $note, $status, now()]);
+            ok(['id' => (int)db()->lastInsertId()], '员工已添加');
+        }
+
+        case 'staff/password': {
+            $a = admin_required();
+            perm_check_cap($a, 'staff');
+            $id = inp_int('id');
+            $new = (string)inp('password', '');
+            if ($id <= 0) fail('缺少 id');
+            if (strlen($new) < 6) fail('新密码至少 6 位');
+            $st = db()->prepare('SELECT id FROM admins WHERE id=?');
+            $st->execute([$id]);
+            if (!$st->fetchColumn()) fail('账号不存在', 404);
+            db()->prepare('UPDATE admins SET pass_hash=? WHERE id=?')
+               ->execute([password_hash($new, PASSWORD_DEFAULT), $id]);
+            ok(null, '密码已重置');
+        }
+
+        case 'staff/delete': {
+            $a = admin_required();
+            perm_check_cap($a, 'staff');
+            $id = inp_int('id');
+            if ($id <= 0) fail('缺少 id');
+            if ($id === (int)$a['id']) fail('不能删除自己');
+            $st = db()->prepare('SELECT * FROM admins WHERE id=?');
+            $st->execute([$id]);
+            $row = $st->fetch();
+            if (!$row) fail('账号不存在', 404);
+            if (perm_normalize_role((string)$row['role']) === 'owner') {
+                $cnt = (int)db()->query("SELECT COUNT(*) FROM admins WHERE role='owner'")->fetchColumn();
+                if ($cnt <= 1) fail('至少要保留一个店主账号');
+            }
+            db()->prepare('DELETE FROM admins WHERE id=?')->execute([$id]);
+            db()->prepare('DELETE FROM admin_tokens WHERE admin_id=?')->execute([$id]);
+            ok(null, '已删除');
         }
 
         /* =====================================================
@@ -573,7 +703,7 @@ try {
            后台：充值卡管理
            ===================================================== */
         case 'admin/recharge-stats': {
-            admin_required();
+            perm_check_cap(admin_required(), 'recharge');
             card_mark_expired();
             $db = db();
             $row = $db->query("SELECT
@@ -618,6 +748,7 @@ try {
 
         case 'admin/recharge-generate': {
             $a = admin_required();
+            perm_check_cap($a, 'recharge');
             $count = max(1, min(500, inp_int('count', 10)));
             $amount = round(max(0, inp_float('amount', 0)), 2);
             $bonus = round(max(0, inp_float('bonus', 0)), 2);
@@ -682,7 +813,7 @@ try {
         }
 
         case 'admin/recharge-list': {
-            admin_required();
+            perm_check_cap(admin_required(), 'recharge');
             card_mark_expired();
             [$page, $size, $offset] = page_params();
             $kw = inp_str('kw');
@@ -724,7 +855,7 @@ try {
         }
 
         case 'admin/recharge-export': {
-            admin_required();
+            perm_check_cap(admin_required(), 'recharge');
             card_mark_expired();
             $status = inp_str('status');
             $batch = inp_str('batch');
@@ -746,7 +877,7 @@ try {
         }
 
         case 'admin/recharge-save': {
-            admin_required();
+            perm_check_cap(admin_required(), 'recharge');
             $id = inp_int('id');
             $b = body();
             if ($id <= 0) fail('缺少卡 ID');
@@ -784,7 +915,7 @@ try {
         }
 
         case 'admin/recharge-void': {
-            admin_required();
+            perm_check_cap(admin_required(), 'recharge');
             $id = inp_int('id');
             $st = db()->prepare('SELECT * FROM recharge_cards WHERE id=?');
             $st->execute([$id]);
@@ -797,7 +928,7 @@ try {
         }
 
         case 'admin/recharge-delete': {
-            admin_required();
+            perm_check_cap(admin_required(), 'recharge');
             $ids = inp('ids', null);
             $id = inp_int('id');
             $list = [];
@@ -820,7 +951,7 @@ try {
            后台：会员钱包
            ===================================================== */
         case 'admin/member-wallet': {
-            admin_required();
+            perm_check_cap(admin_required(), 'recharge');
             $mid = inp_int('member_id');
             if ($mid <= 0) fail('请选择会员');
             $st = db()->prepare('SELECT * FROM members WHERE id=?');
@@ -844,7 +975,7 @@ try {
         }
 
         case 'admin/wallet-adjust': {
-            admin_required();
+            perm_check_cap(admin_required(), 'recharge');
             $mid = inp_int('member_id');
             $amount = round(inp_float('amount', 0), 2);
             $points = inp_int('points', 0);
@@ -891,12 +1022,13 @@ try {
            后台：一键备份
            ===================================================== */
         case 'admin/backup-stats': {
-            admin_required();
+            perm_check_cap(admin_required(), 'backup');
             ok(backup_stats());
         }
 
         case 'admin/backup-create': {
             $a = admin_required();
+            perm_check_cap($a, 'backup');
             $note = inp_str('note');
             $withImg = (int)inp('with_images', 1) === 1;
             @set_time_limit(0);
@@ -910,7 +1042,7 @@ try {
         }
 
         case 'admin/backup-list': {
-            admin_required();
+            perm_check_cap(admin_required(), 'backup');
             [$page, $size, $offset] = page_params();
             $db = db();
             $total = (int)$db->query('SELECT COUNT(*) FROM backups')->fetchColumn();
@@ -926,7 +1058,7 @@ try {
         }
 
         case 'admin/backup-download': {
-            admin_required();
+            perm_check_cap(admin_required(), 'backup');
             $id = inp_int('id');
             $st = db()->prepare('SELECT * FROM backups WHERE id=?');
             $st->execute([$id]);
@@ -945,7 +1077,7 @@ try {
         }
 
         case 'admin/backup-delete': {
-            admin_required();
+            perm_check_cap(admin_required(), 'backup');
             $id = inp_int('id');
             $st = db()->prepare('SELECT * FROM backups WHERE id=?');
             $st->execute([$id]);
@@ -961,12 +1093,12 @@ try {
            后台：安装包（IPA）上传
            ===================================================== */
         case 'admin/ipa-info': {
-            admin_required();
+            perm_check_cap(admin_required(), 'settings');
             ok(ipa_current());
         }
 
         case 'admin/ipa-upload': {
-            admin_required();
+            perm_check_cap(admin_required(), 'settings');
             if (empty($_FILES['file'])) fail('没有收到文件，请重新选择 .ipa 安装包');
             $f = $_FILES['file'];
             if ((int)($f['error'] ?? UPLOAD_ERR_NO_FILE) !== UPLOAD_ERR_OK) {
@@ -1043,13 +1175,13 @@ try {
            App ↔ 后台 双向同步
            ===================================================== */
         case 'sync/pull': {
-            admin_required();
+            perm_check_cap(admin_required(), 'sync');
             $since = inp_str('since');
             ok(sync_pull($since !== '' ? $since : null));
         }
 
         case 'sync/push': {
-            admin_required();
+            perm_check_cap(admin_required(), 'sync');
             $b = body();
             $payload = $b['data'] ?? $b;
             if (!is_array($payload)) fail('数据格式不对');
@@ -1057,7 +1189,7 @@ try {
         }
 
         case 'sync/delete': {
-            admin_required();
+            perm_check_cap(admin_required(), 'sync');
             $b = body();
             $payload = $b['data'] ?? $b;
             if (!is_array($payload)) fail('数据格式不对');
@@ -1065,7 +1197,7 @@ try {
         }
 
         case 'sync/stats': {
-            admin_required();
+            perm_check_cap(admin_required(), 'sync');
             ok(['counts' => sync_stats(), 'modules' => array_keys(sync_modules())]);
         }
 
@@ -1096,9 +1228,10 @@ try {
            通用 CRUD
            ===================================================== */
         case 'list': {
-            admin_required();
+            $me = admin_required();
             $key = inp_str('m');
             $def = module_def($key);
+            perm_check_module($me, $key, false);
             [$page, $size, $offset] = page_params();
             $kw = inp_str('kw');
             $where = '';
@@ -1154,9 +1287,10 @@ try {
         }
 
         case 'save': {
-            admin_required();
+            $me = admin_required();
             $key = inp_str('m');
             $def = module_def($key);
+            perm_check_module($me, $key, true);
             $b = body();
             $id = (int)($b['id'] ?? 0);
             $data = pick($b, $def['fields']);
@@ -1193,10 +1327,30 @@ try {
             /* 后台新建的行也补 uid + updated_at，App 才能拉到并回写 */
             $hasUid = column_exists(db(), $def['table'], 'uid');
             $hasUpd = column_exists(db(), $def['table'], 'updated_at');
+            $hasFts = column_exists(db(), $def['table'], 'field_ts');
+
+            /* 后台改过的每一列都要打上"此刻"的字段时间，
+               否则 App 用较新的 field_ts 还能把后台的修改覆盖回去 */
+            $stampFts = function (array $cols, ?array $base) use ($hasFts): ?string {
+                if (!$hasFts) return null;
+                $ft = $base ?: [];
+                $t = date('c');
+                foreach ($cols as $c) {
+                    if ($c === 'uid' || $c === 'updated_at' || $c === 'field_ts' || $c === 'created_at') continue;
+                    $ft[$c] = $t;
+                }
+                return json_encode($ft, JSON_UNESCAPED_UNICODE);
+            };
 
             if ($id > 0) {
                 if (!$data) fail('没有需要更新的字段');
                 if ($hasUpd) $data['updated_at'] = now();
+                if ($hasFts) {
+                    $cur = db()->prepare("SELECT field_ts FROM {$def['table']} WHERE id=?");
+                    $cur->execute([$id]);
+                    $oldFts = json_decode((string)$cur->fetchColumn(), true);
+                    $data['field_ts'] = $stampFts(array_keys($data), is_array($oldFts) ? $oldFts : []);
+                }
                 $sets = [];
                 $args = [];
                 foreach ($data as $k => $v) {
@@ -1214,6 +1368,7 @@ try {
             $data['created_at'] = now();
             if ($hasUid) $data['uid'] = sync_uuid();
             if ($hasUpd) $data['updated_at'] = now();
+            if ($hasFts) $data['field_ts'] = $stampFts(array_keys($data), []);
             $cols = array_keys($data);
             $quoted = array_map(function ($c) { return "`$c`"; }, $cols);
             $st = db()->prepare("INSERT INTO {$def['table']}(" . implode(',', $quoted) . ') VALUES(' . rtrim(str_repeat('?,', count($cols)), ',') . ')');
@@ -1225,9 +1380,10 @@ try {
         }
 
         case 'delete': {
-            admin_required();
+            $me = admin_required();
             $key = inp_str('m');
             $def = module_def($key);
+            perm_check_module($me, $key, true);
             $id = inp_int('id');
             if ($id <= 0) fail('缺少 id');
             db()->prepare("DELETE FROM {$def['table']} WHERE id=?")->execute([$id]);
@@ -1286,7 +1442,7 @@ try {
         }
 
         case 'settings/save': {
-            admin_required();
+            perm_check_cap(admin_required(), 'settings');
             $b = body();
             $allow = ['shop_name', 'shop_slogan', 'before_label', 'after_label', 'contact_phone',
                       'contact_wechat', 'pay_qr', 'api_base', 'app_version', 'ipa_file', 'ipa_size',
@@ -1305,7 +1461,7 @@ try {
            短信
            ===================================================== */
         case 'sms/providers': {
-            admin_required();
+            perm_check_cap(admin_required(), 'sms');
             $rows = db()->query('SELECT * FROM sms_providers ORDER BY sort ASC')->fetchAll();
             foreach ($rows as &$row) {
                 $cfg = json_decode((string)$row['config'], true) ?: [];
@@ -1319,7 +1475,7 @@ try {
         }
 
         case 'sms/provider-save': {
-            admin_required();
+            perm_check_cap(admin_required(), 'sms');
             $code = inp_str('code');
             $row = sms_provider_row($code);
             if (!$row) fail('通道不存在');
@@ -1356,7 +1512,7 @@ try {
         }
 
         case 'sms/test': {
-            admin_required();
+            perm_check_cap(admin_required(), 'sms');
             $code = inp_str('code');
             $phone = inp_str('phone');
             if (!phone_ok($phone)) fail('请填写正确的手机号');
@@ -1372,7 +1528,7 @@ try {
         }
 
         case 'sms/logs': {
-            admin_required();
+            perm_check_cap(admin_required(), 'sms');
             [$page, $size, $offset] = page_params();
             $total = (int)db()->query('SELECT COUNT(*) FROM sms_logs')->fetchColumn();
             $rows = db()->query("SELECT * FROM sms_logs ORDER BY id DESC LIMIT $size OFFSET $offset")->fetchAll();
@@ -1383,15 +1539,37 @@ try {
            文件上传
            ===================================================== */
         case 'upload': {
-            admin_required();
+            perm_check_cap(admin_required(), 'write');
             if (empty($_FILES['file'])) fail('没有收到文件');
             $f = $_FILES['file'];
             if ($f['error'] !== UPLOAD_ERR_OK) fail('上传失败，错误码 ' . $f['error']);
-            if ($f['size'] > 12 * 1024 * 1024) fail('图片不能超过 12MB');
+            if ($f['size'] <= 0) fail('文件是空的');
+
+            /* 图片走 getimagesize 验真，视频走 MIME + 扩展名白名单 */
+            $ext = '';
+            $isImage = false;
             $info = @getimagesize($f['tmp_name']);
-            if (!$info) fail('只能上传图片文件');
-            $ext = image_type_to_extension($info[2], false) ?: 'jpg';
-            if (!in_array($ext, ['jpeg', 'jpg', 'png', 'gif', 'webp'], true)) $ext = 'jpg';
+            if ($info) {
+                $isImage = true;
+                $ext = image_type_to_extension($info[2], false) ?: 'jpg';
+                if (!in_array($ext, ['jpeg', 'jpg', 'png', 'gif', 'webp'], true)) $ext = 'jpg';
+                if ($f['size'] > 12 * 1024 * 1024) fail('图片不能超过 12MB');
+            } else {
+                if ($f['size'] > 200 * 1024 * 1024) fail('视频不能超过 200MB');
+                $raw = strtolower((string)pathinfo((string)($f['name'] ?? ''), PATHINFO_EXTENSION));
+                $allowed = ['mp4', 'mov', 'm4v', 'qt'];
+                if (!in_array($raw, $allowed, true)) fail('只支持图片或 mp4/mov 视频');
+                $mime = '';
+                if (function_exists('finfo_open')) {
+                    $fi = finfo_open(FILEINFO_MIME_TYPE);
+                    if ($fi) { $mime = (string)finfo_file($fi, $f['tmp_name']); finfo_close($fi); }
+                }
+                if ($mime !== '' && strpos($mime, 'video/') !== 0 && $mime !== 'application/octet-stream') {
+                    fail('文件内容不像视频（' . $mime . '）');
+                }
+                $ext = $raw === 'qt' ? 'mov' : $raw;
+            }
+
             $sub = 'uploads/' . date('Ym');
             $dir = dirname(__DIR__) . '/' . $sub;
             if (!is_dir($dir)) @mkdir($dir, 0755, true);
@@ -1399,7 +1577,11 @@ try {
             $path = $dir . '/' . $name;
             if (!move_uploaded_file($f['tmp_name'], $path)) fail('保存文件失败，请检查目录权限');
             @chmod($path, 0644);
-            ok(['url' => '/' . $sub . '/' . $name], '上传成功');
+            ok([
+                'url' => '/' . $sub . '/' . $name,
+                'kind' => $isImage ? 'image' : 'video',
+                'size' => (int)$f['size'],
+            ], '上传成功');
         }
 
         /* =====================================================

@@ -2,6 +2,7 @@ import Foundation
 import SwiftUI
 import Combine
 import UIKit
+import AVFoundation
 
 /// 全局数据仓库：JSON 元数据 + 文件系统图片。
 /// 选择文件系统而非数据库，是为了让「备份 = 打包目录」这件事天然成立。
@@ -243,10 +244,67 @@ final class Store: ObservableObject {
         let url = photoURL(clientID: clientID, fileName: photo.fileName)
         ImageCache.shared.remove(url)
         try? FileManager.default.removeItem(at: url)
+        if !photo.thumbName.isEmpty {
+            let t = photoURL(clientID: clientID, fileName: photo.thumbName)
+            ImageCache.shared.remove(t)
+            try? FileManager.default.removeItem(at: t)
+        }
         updateClient(clientID) { c in
             c.photos.removeAll { $0.id == photo.id }
         }
         save()
+    }
+
+    /// 导入一段视频：复制到客户目录 + 抽一帧当封面 + 读时长
+    /// 返回 nil 表示失败，原因写在 lastError
+    func importVideo(from src: URL, clientID: UUID) -> PhotoItem? {
+        let id = UUID()
+        let videoName = id.uuidString + ".mp4"
+        let thumbName = id.uuidString + ".jpg"
+        let dir = clientDirectory(clientID)
+
+        do {
+            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            let dst = dir.appendingPathComponent(videoName)
+            if FileManager.default.fileExists(atPath: dst.path) {
+                try FileManager.default.removeItem(at: dst)
+            }
+            try FileManager.default.copyItem(at: src, to: dst)
+
+            let asset = AVURLAsset(url: dst)
+            let seconds = CMTimeGetSeconds(asset.duration)
+            let duration = seconds.isFinite && seconds > 0 ? seconds : 0
+
+            /* 抽第 1 秒的帧当封面；视频太短就抽 0 秒 */
+            let gen = AVAssetImageGenerator(asset: asset)
+            gen.appliesPreferredTrackTransform = true
+            gen.maximumSize = CGSize(width: 900, height: 900)
+            let at = CMTime(seconds: min(1.0, max(0, duration / 3)), preferredTimescale: 600)
+            if let cg = try? gen.copyCGImage(at: at, actualTime: nil) {
+                let img = UIImage(cgImage: cg)
+                if let data = img.jpegData(compressionQuality: 0.85) {
+                    try? data.write(to: dir.appendingPathComponent(thumbName), options: .atomic)
+                }
+            }
+
+            return PhotoItem(id: id, fileName: videoName, phase: .before,
+                             createdAt: Date(), kind: .video,
+                             duration: duration, thumbName: thumbName)
+        } catch {
+            lastError = "视频导入失败：\(error.localizedDescription)"
+            return nil
+        }
+    }
+
+    /// 视频文件的本地地址
+    func videoURL(clientID: UUID, photo: PhotoItem) -> URL {
+        photoURL(clientID: clientID, fileName: photo.fileName)
+    }
+
+    /// 视频封面地址；没有封面时退回 nil
+    func thumbURL(clientID: UUID, photo: PhotoItem) -> URL? {
+        guard !photo.thumbName.isEmpty else { return nil }
+        return photoURL(clientID: clientID, fileName: photo.thumbName)
     }
 
     func movePhoto(clientID: UUID, photoID: UUID, to phase: PhotoPhase) {

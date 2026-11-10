@@ -23,6 +23,17 @@ function db_config(): array
     ];
 }
 
+/**
+ * 结构版本。每次给老库加字段/加表就把数字 +1，
+ * 老库下次访问会自动跑一遍 migrate_schema()，不用手动执行 SQL。
+ *
+ * 1 → 初始
+ * 2 → App 同步字段（uid / updated_at / 4 张新表）
+ * 3 → 员工权限 perms、视频字段、字段级合并 field_ts
+ * 4 → 视频封面地址 thumb_url
+ */
+const SCHEMA_VERSION = 4;
+
 function db(): PDO
 {
     static $pdo = null;
@@ -38,19 +49,43 @@ function db(): PDO
     ]);
     $pdo->exec("SET time_zone = '+08:00'");
 
-    if (!table_exists($pdo, 'settings')) {
+    $fresh = !table_exists($pdo, 'settings');
+    if ($fresh) {
         init_schema($pdo);
         seed_data($pdo);
+        schema_set_version($pdo, SCHEMA_VERSION);
+        return $pdo;
     }
-    // 老库升级：补齐钱包、充值卡、备份与 App 同步所需结构
-    if (!table_exists($pdo, 'recharge_cards') || !table_exists($pdo, 'backups')
-        || !table_exists($pdo, 'appointments') || !table_exists($pdo, 'client_steps')
-        || !table_exists($pdo, 'client_notes') || !table_exists($pdo, 'product_claims')) {
-        init_schema($pdo);
+
+    /* 老库：版本号落后就跑迁移 */
+    if (schema_version($pdo) < SCHEMA_VERSION) {
+        init_schema($pdo);          // 幂等，补上可能缺的表
         migrate_schema($pdo);
         seed_recharge($pdo);
+        schema_set_version($pdo, SCHEMA_VERSION);
     }
     return $pdo;
+}
+
+function schema_version(PDO $db): int
+{
+    try {
+        $st = $db->prepare('SELECT v FROM settings WHERE k=?');
+        $st->execute(['schema_version']);
+        $v = $st->fetchColumn();
+        return $v === false ? 0 : (int)$v;
+    } catch (Throwable $e) {
+        return 0;
+    }
+}
+
+function schema_set_version(PDO $db, int $v): void
+{
+    try {
+        $db->prepare('INSERT INTO settings(k,v) VALUES(?,?) ON DUPLICATE KEY UPDATE v=VALUES(v)')
+           ->execute(['schema_version', (string)$v]);
+    } catch (Throwable $e) {
+    }
 }
 
 function table_exists(PDO $db, string $name): bool
@@ -103,6 +138,31 @@ function migrate_schema(PDO $db): void
     add_column($db, 'compares', 'client_uid', "VARCHAR(36) NULL");
     add_column($db, 'agent_orders', 'agent_uid', "VARCHAR(36) NULL");
     add_column($db, 'appointments', 'updated_at', "DATETIME NULL");
+
+    /* 员工权限：perms 存 JSON 覆盖，留空则完全按角色预设 */
+    add_column($db, 'admins', 'perms', "TEXT NULL COMMENT 'JSON：{modules:[],caps:{}}'");
+    add_column($db, 'admins', 'note', "VARCHAR(200) NULL COMMENT '岗位备注'");
+    add_column($db, 'admins', 'uid', "VARCHAR(36) NULL COMMENT '预留'");
+
+    /* 老数据的 role=staff 归到店长，避免降级成只读 */
+    try {
+        $db->exec("UPDATE admins SET role='manager' WHERE role='staff'");
+    } catch (Throwable $e) {
+    }
+
+    /* 字段级合并：每行记录"每个列最后一次被谁在什么时间改过" */
+    foreach (['mentors', 'products', 'agents', 'agent_orders', 'customers', 'photos',
+              'compares', 'payments', 'appointments', 'client_steps', 'client_notes',
+              'product_claims'] as $t) {
+        add_column($db, $t, 'field_ts', "TEXT NULL COMMENT 'JSON：列名 => 修改时间'");
+    }
+
+    /* 视频：照片表扩展成媒体表 */
+    add_column($db, 'photos', 'kind', "VARCHAR(10) NOT NULL DEFAULT 'image' COMMENT 'image / video'");
+    add_column($db, 'photos', 'duration', "DOUBLE NOT NULL DEFAULT 0 COMMENT '视频秒数'");
+    add_column($db, 'photos', 'thumb_name', "VARCHAR(120) NULL COMMENT '视频封面文件名'");
+    add_column($db, 'photos', 'size_bytes', "BIGINT NOT NULL DEFAULT 0");
+    add_column($db, 'photos', 'thumb_url', "VARCHAR(255) NULL COMMENT '视频封面地址'");
 }
 
 function add_index(PDO $db, string $table, string $name, string $column, bool $unique = false): void
@@ -132,6 +192,8 @@ function init_schema(PDO $db): void
         name VARCHAR(60),
         pass_hash VARCHAR(255) NOT NULL,
         role VARCHAR(20) NOT NULL DEFAULT 'owner',
+        perms TEXT NULL COMMENT 'JSON：{modules:[],caps:{}}',
+        note VARCHAR(200) NULL COMMENT '岗位备注',
         status VARCHAR(20) NOT NULL DEFAULT '正常',
         created_at DATETIME NOT NULL,
         last_login DATETIME NULL

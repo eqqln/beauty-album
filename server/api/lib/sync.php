@@ -31,10 +31,12 @@ function sync_modules(): array
             'map' => [
                 'client_uid' => 'client_uid', 'phase' => 'phase', 'url' => 'url',
                 'tag' => 'tag', 'file_name' => 'file_name', 'caption' => 'note',
+                'kind' => 'kind', 'duration' => 'duration', 'thumb_name' => 'thumb_name',
+                'thumb_url' => 'thumb_url', 'size_bytes' => 'size_bytes',
                 'created_at' => 'created_at',
             ],
-            'ints' => [],
-            'floats' => [],
+            'ints' => ['size_bytes'],
+            'floats' => ['duration'],
         ],
         'compares' => [
             'table' => 'compares',
@@ -242,6 +244,10 @@ function sync_row_out(array $row, array $def): array
     }
 
     $out['updated_at'] = sync_iso($row['updated_at'] ?? null);
+    if (array_key_exists('field_ts', $row)) {
+        $ft = json_decode((string)$row['field_ts'], true);
+        $out['field_ts'] = is_array($ft) ? $ft : [];
+    }
     return $out;
 }
 
@@ -297,7 +303,7 @@ function sync_pull(?string $since): array
 
     foreach (sync_modules() as $name => $def) {
         $table = $def['table'];
-        $cols = array_values(array_unique(array_merge(['id', 'uid', 'updated_at', 'created_at'], array_values($def['map']))));
+        $cols = array_values(array_unique(array_merge(['id', 'uid', 'updated_at', 'created_at', 'field_ts'], array_values($def['map']))));
         $cols = array_values(array_filter($cols, function ($c) use ($table) {
             return column_exists(db(), $table, $c);
         }));
@@ -331,7 +337,16 @@ function sync_pull(?string $since): array
     return $out;
 }
 
-/** 推送：按 uid upsert，返回每个模块的成功条数 */
+/**
+ * 推送：按字段做合并，不再整行覆盖
+ *
+ * 客户端可以带 field_ts = {"字段名":"时间"}：
+ *   - 带了这个字段，说明是"局部修改"，只处理 field_ts 里出现的列
+ *   - 每一列单独比时间：客户端比服务端新才覆盖，否则保留服务端的值
+ *   - 没带 field_ts（老版本 App）退回整行 LWW，行为与以前一致
+ *
+ * 返回里带 merged 列表，客户端可据此把被拒绝的字段改回服务端的值。
+ */
 function sync_push(array $payload): array
 {
     $mods = sync_modules();
@@ -348,10 +363,13 @@ function sync_push(array $payload): array
             continue;
         }
         if (!isset($mods[$name]) || !is_array($records)) continue;
+
         $def = $mods[$name];
         $table = $def['table'];
+        $hasFieldTs = column_exists(db(), $table, 'field_ts');
         $ok = 0;
         $skip = 0;
+        $merged = [];
 
         foreach ($records as $rec) {
             if (!is_array($rec)) { $skip++; continue; }
@@ -374,46 +392,121 @@ function sync_push(array $payload): array
                 $row['created_at'] = now();
             }
 
-            $st = db()->prepare("SELECT id, updated_at FROM `$table` WHERE uid=? LIMIT 1");
+            /* 客户端字段时间戳：App 字段名 -> 数据库列名 */
+            $ftsIn = [];
+            if ($hasFieldTs && isset($rec['field_ts']) && is_array($rec['field_ts'])) {
+                foreach ($rec['field_ts'] as $ak => $tv) {
+                    $dk = $def['map'][$ak] ?? $ak;
+                    if (column_exists(db(), $table, $dk)) $ftsIn[$dk] = (string)$tv;
+                }
+            }
+            $partial = !empty($ftsIn);
+
+            $st = db()->prepare("SELECT * FROM `$table` WHERE uid=? LIMIT 1");
             $st->execute([$uid]);
             $exist = $st->fetch();
 
-            /* 较新者胜：后台改过、且比 App 这条更新，就不让 App 覆盖回去 */
-            if ($exist && !empty($exist['updated_at']) && !empty($row['updated_at'])) {
-                $serverTs = strtotime((string)$exist['updated_at']);
-                $clientTs = strtotime((string)$row['updated_at']);
-                if ($serverTs !== false && $clientTs !== false && $serverTs > $clientTs + 1) {
-                    $skip++;
-                    continue;
-                }
-            }
-
             try {
-                if ($exist) {
-                    $sets = [];
-                    $vals = [];
-                    foreach ($row as $k => $v) { $sets[] = "`$k`=?"; $vals[] = $v; }
-                    $vals[] = $exist['id'];
-                    db()->prepare("UPDATE `$table` SET " . implode(',', $sets) . " WHERE id=?")->execute($vals);
-                } else {
+                if (!$exist) {
+                    /* 新行：全量插入，field_ts 按客户端给的填 */
+                    if ($hasFieldTs) {
+                        $ft = [];
+                        foreach ($row as $col => $v) {
+                            if ($col === 'uid') continue;
+                            $ft[$col] = $ftsIn[$col] ?? (string)$row['updated_at'];
+                        }
+                        $row['field_ts'] = json_encode($ft, JSON_UNESCAPED_UNICODE);
+                    }
                     $cols = array_keys($row);
                     $ph = implode(',', array_fill(0, count($cols), '?'));
                     $colsSql = implode(',', array_map(function ($c) { return "`$c`"; }, $cols));
                     db()->prepare("INSERT INTO `$table` ($colsSql) VALUES ($ph)")->execute(array_values($row));
+                    $ok++;
+                    continue;
                 }
-                $ok++;
+
+                /* 已有行：整行 LWW（老客户端 / 没带 field_ts） */
+                if (!$partial) {
+                    $serverTs = !empty($exist['updated_at']) ? strtotime((string)$exist['updated_at']) : false;
+                    $clientTs = !empty($row['updated_at']) ? strtotime((string)$row['updated_at']) : false;
+                    if ($serverTs !== false && $clientTs !== false && $serverTs > $clientTs + 1) {
+                        $skip++;
+                        continue;
+                    }
+                    $sets = [];
+                    $vals = [];
+                    $ft = $hasFieldTs ? (json_decode((string)($exist['field_ts'] ?? ''), true) ?: []) : [];
+                    foreach ($row as $k => $v) {
+                        $sets[] = "`$k`=?";
+                        $vals[] = $v;
+                        if ($hasFieldTs && $k !== 'uid') $ft[$k] = (string)$row['updated_at'];
+                    }
+                    if ($hasFieldTs) {
+                        $sets[] = "`field_ts`=?";
+                        $vals[] = json_encode($ft, JSON_UNESCAPED_UNICODE);
+                    }
+                    $vals[] = $exist['id'];
+                    db()->prepare("UPDATE `$table` SET " . implode(',', $sets) . " WHERE id=?")->execute($vals);
+                    $ok++;
+                    continue;
+                }
+
+                /* 已有行 + 带 field_ts：逐列比时间 */
+                $serverFts = json_decode((string)($exist['field_ts'] ?? ''), true);
+                if (!is_array($serverFts)) $serverFts = [];
+                $existTs = !empty($exist['updated_at']) ? strtotime((string)$exist['updated_at']) : 0;
+
+                $sets = [];
+                $vals = [];
+                $maxTs = 0;
+                $rejected = [];
+
+                foreach ($row as $col => $v) {
+                    if ($col === 'uid') continue;
+                    if (!array_key_exists($col, $ftsIn)) continue;      // 客户端没动这列，保持服务端值
+
+                    $cTs = strtotime($ftsIn[$col]);
+                    $sTs = isset($serverFts[$col]) ? strtotime((string)$serverFts[$col]) : $existTs;
+                    if ($cTs === false) $cTs = max($existTs + 1, time());
+                    if ($sTs === false) $sTs = 0;
+
+                    if ($cTs >= $sTs) {
+                        $sets[] = "`$col`=?";
+                        $vals[] = $v;
+                        $serverFts[$col] = date('c', $cTs);
+                        if ($cTs > $maxTs) $maxTs = $cTs;
+                    } else {
+                        $rejected[$col] = $exist[$col] ?? null;         // 服务端更新，回传服务端的值
+                    }
+                }
+
+                if ($sets) {
+                    $sets[] = "`updated_at`=?";
+                    $vals[] = date('Y-m-d H:i:s', max($maxTs, $existTs));
+                    $sets[] = "`field_ts`=?";
+                    $vals[] = json_encode($serverFts, JSON_UNESCAPED_UNICODE);
+                    $vals[] = $exist['id'];
+                    db()->prepare("UPDATE `$table` SET " . implode(',', $sets) . " WHERE id=?")->execute($vals);
+                    $ok++;
+                } else {
+                    $skip++;
+                }
+
+                if ($rejected) {
+                    $merged[] = ['uid' => $uid, 'fields' => $rejected];
+                }
             } catch (Throwable $e) {
                 $skip++;
             }
         }
 
         $result[$name] = ['saved' => $ok, 'skipped' => $skip];
+        if ($merged) $result[$name]['merged'] = $merged;
     }
 
     return $result;
 }
 
-/** 删除：App 端删了，后台也要删 */
 function sync_delete(array $payload): array
 {
     $mods = sync_modules();
