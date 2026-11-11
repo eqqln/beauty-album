@@ -2171,6 +2171,7 @@
           (on
             ? (t.id === 0 ? '' : '<button class="btn ghost sm" data-act="leave">回到默认板块</button>')
             : '<button class="btn primary sm" data-act="enter">进入这个板块</button>') +
+          '<button class="btn ghost sm" data-act="backup">⬇ 备份下载</button>' +
           '<button class="btn ghost sm" data-act="restore">恢复到手机</button>' +
           '<button class="btn ghost sm" data-act="edit">编辑</button>' +
           '<button class="btn ghost sm" data-act="toggle">' + (off ? '启用' : '停用') + '</button>' +
@@ -2233,8 +2234,24 @@
         return;
       }
 
+      if (a === 'backup') {
+        var nm = t.shop_name || t.name || ('板块 #' + t.id);
+        UI.confirm('备份并下载「' + nm + '」',
+          '把这一个板块的全部资料打成压缩包：客户、相册、护理步骤、预约、产品、会员、收款、充值卡、授权记录，连同图片和视频。\n只含这一个板块，不含别人的数据。资料多的时候要等十几秒。',
+          async function () {
+            UI.toast('正在打包，请稍候…');
+            try {
+              var r = await API.post('admin/tenant-export', { id: t.id });
+              await API.download('admin/tenant-export-download', { id: t.id, file: r.file }, r.file);
+              UI.toast('已下载 · ' + r.rows + ' 条数据 / ' + r.media + ' 个文件 / ' + r.size_text, 'ok');
+              load();
+            } catch (e) { UI.toast(e.message, 'bad'); }
+          }, false, '开始备份');
+        return;
+      }
+
       if (a === 'restore') {
-        UI.confirmBox('恢复到手机',
+        UI.confirm('恢复到手机',
           '标记之后，' + (t.shop_name || t.name) + ' 下次打开 App 或激活时，会自动把服务器上的全部资料下载到手机并覆盖本机数据。确认吗？',
           async function () {
             try {
@@ -2257,7 +2274,7 @@
       }
 
       if (a === 'del') {
-        UI.confirmBox('删除板块',
+        UI.confirm('删除板块',
           '会连同这个板块里的客户、相册、步骤、产品、预约一起删掉，不能恢复。确认删除「' + (t.shop_name || t.name) + '」？',
           async function () {
             try {

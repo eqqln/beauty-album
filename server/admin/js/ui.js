@@ -100,14 +100,15 @@
     return api;
   }
 
-  function confirmBox(title, text, onYes, danger) {
+  function confirmBox(title, text, onYes, danger, okLabel) {
     modal({
       title: title,
-      body: '<p style="font-size:13.5px;color:#5c4f55;line-height:1.7">' + esc(text) + '</p>',
+      body: '<p style="font-size:13.5px;color:#5c4f55;line-height:1.7;white-space:pre-line">' + esc(text) + '</p>',
       buttons: [
         { label: '取消', kind: 'ghost' },
         {
-          label: '确定删除', kind: danger ? 'danger' : 'primary',
+          label: okLabel || (danger ? '确定删除' : '确定'),
+          kind: danger ? 'danger' : 'primary',
           onClick: function (m) { m.close(); onYes(); }
         }
       ]
@@ -134,7 +135,7 @@
 
   window.UI = {
     esc: esc, money: money, num: num, fmtDate: fmtDate,
-    toast: toast, modal: modal, confirm: confirmBox,
+    toast: toast, modal: modal, confirm: confirmBox, confirmBox: confirmBox,
     loading: loading, empty: empty, badge: badge
   };
 })();

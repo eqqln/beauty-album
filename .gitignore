@@ -20,3 +20,4 @@ tools/_*.sh
 # 构建产物下载包
 art.zip
 tools/_tok.txt
+tools/_shots/*.zip

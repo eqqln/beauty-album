@@ -374,9 +374,15 @@ function license_redeem(array $in): array
                ->execute([$devTenantId, (int)$c['id']]);
             $c['tenant_id'] = $devTenantId;
         } else {
-            /* 只有"明确是旧版本"才走兼容：1.5.1 及以前界面上没有姓名/电话输入框，
-               直接拒会让还没升级的店彻底激活不了。版本号缺失或 >= 1.6.0 一律按新规则严格校验。 */
-            $legacy = $appVersion !== '' && version_compare($appVersion, '1.6.0', '<');
+            /* 只有"明确是旧版本、而且一个字段都没带"才走兼容：
+               1.5.1 及以前界面上没有姓名/电话输入框，直接拒会让还没升级的店彻底激活不了。
+
+               注意版本号形如 `1.6.0(15)`，PHP 的 version_compare 会把括号当成
+               更低的分段（"1.6.0(15)" < "1.6.0"），所以必须先抽出数字部分再比，
+               否则新客户端会被误判成老版本，姓名电话白填。 */
+            $verNum = preg_match('/^\s*(\d+(?:\.\d+)*)/', $appVersion, $m) ? $m[1] : '';
+            $legacy = $userName === '' && $userPhone === ''
+                      && $verNum !== '' && version_compare($verNum, '1.6.0', '<');
             if (!$legacy) {
                 /* 按手机号认人，同一个人换码续费不会丢数据 */
                 if ($userName === '') throw new RuntimeException('请填写使用人姓名');

@@ -28,6 +28,7 @@ require __DIR__ . '/lib/tenant.php';
 require __DIR__ . '/lib/recharge.php';
 require __DIR__ . '/lib/license.php';
 require __DIR__ . '/lib/backup.php';
+require __DIR__ . '/lib/tenant_export.php';
 require __DIR__ . '/lib/ipa.php';
 require __DIR__ . '/lib/sync.php';
 
@@ -1431,6 +1432,7 @@ try {
             foreach ($st->fetchAll() as $t) {
                 $o = tenant_out($t);
                 $o['counts'] = tenant_counts((int)$t['id']);
+                $o['backup_count'] = count(glob(tenant_export_dir((int)$t['id']) . '/*.zip') ?: []);
                 /* 该板块最近一条有效授权 */
                 $a = db()->prepare("SELECT expire_at, code, device_name FROM activations
                                     WHERE tenant_id=? AND status='生效中' ORDER BY id DESC LIMIT 1");
@@ -1535,7 +1537,55 @@ try {
                 db()->prepare('DELETE FROM activations WHERE tenant_id=?')->execute([$id]);
             } catch (Throwable $e) {}
             db()->prepare('DELETE FROM tenants WHERE id=?')->execute([$id]);
+            /* 板块没了，它自己的备份包也没必要留着 */
+            foreach (glob(tenant_export_dir($id) . '/*.zip') ?: [] as $f) @unlink($f);
             ok(null, '板块已删除');
+        }
+
+        /* =====================================================
+           后台：单个板块的一键备份 / 下载
+           ===================================================== */
+
+        /** 生成这块板的完整备份包（数据 + 图片视频） */
+        case 'admin/tenant-export': {
+            $me = admin_required();
+            perm_check_cap($me, 'backup');
+            $id = inp_int('id');
+            $t = tenant_row($id);
+            if (!$t) fail('板块不存在');
+            try {
+                $r = tenant_export_create($id, $me);
+            } catch (Throwable $e) {
+                fail('备份失败：' . $e->getMessage());
+            }
+            license_log('板块备份', null, (string)($t['code'] ?? ''), null, null, 0, 0,
+                        't' . $id . ' ' . $t['name'] . ' · ' . $r['rows'] . ' 条数据 / ' .
+                        $r['media'] . ' 个文件 · ' . $r['size_text'], (string)($me['name'] ?: $me['email']));
+            ok($r, '备份已生成（' . $r['rows'] . ' 条数据 · ' . $r['media'] . ' 个文件 · ' . $r['size_text'] . '）');
+        }
+
+        /** 下载已生成的备份包 */
+        case 'admin/tenant-export-download': {
+            perm_check_cap(admin_required(), 'backup');
+            $id = inp_int('id');
+            $file = inp_str('file');
+            $path = tenant_export_path($id, $file);
+            if (!$path) fail('备份文件不存在，请重新生成', 404);
+
+            while (ob_get_level() > 0) @ob_end_clean();
+            header('Content-Type: application/zip');
+            header('Content-Disposition: attachment; filename="' . basename($path) . '"');
+            header('Content-Length: ' . filesize($path));
+            header('Cache-Control: no-store');
+            @readfile($path);
+            exit;
+        }
+
+        /** 这块板已有的备份包列表 */
+        case 'admin/tenant-export-list': {
+            perm_check_cap(admin_required(), 'backup');
+            $id = inp_int('id');
+            ok(['rows' => tenant_export_list($id)]);
         }
 
         /** App 恢复完成后回报，清掉标志 */
