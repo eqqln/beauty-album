@@ -1992,10 +1992,31 @@
             '<td class="td-main">' + UI.esc(d.left_text) + '</td>' +
             '<td class="td-sub">' + UI.fmtDate(d.last_seen_at) + '</td>' +
             '<td>' + lcBadge(d.status) + '</td>' +
-            '<td class="td-actions"><button class="btn sm ghost" data-dvoid="' + d.id + '" data-void="' +
-              (d.status === '已停用' ? 0 : 1) + '">' + (d.status === '已停用' ? '恢复' : '停用') + '</button></td>' +
+            '<td class="td-actions">' + (d.status === '已解绑'
+              ? '<span class="td-sub">名额已收回</span>'
+              : '<button class="btn sm ghost" data-dvoid="' + d.id + '" data-void="' +
+                  (d.status === '已停用' ? 0 : 1) + '">' + (d.status === '已停用' ? '恢复' : '停用') + '</button> ' +
+                '<button class="btn sm ghost" data-dunbind="' + d.id + '">解绑</button>') +
+            '</td>' +
           '</tr>';
         }).join('') + '</tbody></table></div>';
+
+      m.body.querySelectorAll('[data-dunbind]').forEach(function (b) {
+        b.onclick = function () {
+          UI.confirm('解绑这台设备',
+            '解绑只做两件事：把这张码的 1 个设备名额收回来，并让这台手机下次打开时要求重新激活。\n' +
+            '板块里的客户、相册、护理步骤、预约、收款一条都不会动，服务器上原样保留。\n' +
+            '换手机时先在这里解绑旧机，再让新机用同一张激活码激活即可。',
+            async function () {
+              try {
+                await API.post('admin/license-device-unbind', { id: Number(b.getAttribute('data-dunbind')) });
+                UI.toast('已解绑，名额可以给新手机用了', 'ok');
+                m.close();
+                showDevices(codeId);
+              } catch (e) { UI.toast(e.message, 'bad'); }
+            }, false, '确认解绑');
+        };
+      });
 
       m.body.querySelectorAll('[data-dvoid]').forEach(function (b) {
         b.onclick = async function () {

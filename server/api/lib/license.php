@@ -441,7 +441,7 @@ function license_redeem(array $in): array
                            $same['member_id'], $same['member_phone'], $tenantId, $same['note'], $actId]);
         } else {
             if ((int)$c['used_count'] >= $max) {
-                throw new RuntimeException('这张激活码的 ' . $max . ' 台设备名额已用完，请联系门店');
+                throw new RuntimeException('这张激活码的 ' . $max . ' 台设备名额已用完。换手机请先在后台「激活码 → 设备」里把旧手机解绑，或联系门店处理');
             }
             $db->prepare('INSERT INTO activations(code_id,code,device_id,device_name,platform,app_version,license_key,activated_at,expire_at,last_seen_at,status,tenant_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)')
                 ->execute([(int)$c['id'], $codeRaw, $deviceId, $deviceName, $platform, $appVersion,

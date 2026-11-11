@@ -1336,6 +1336,43 @@ try {
             ok(null, $void ? '该设备已停用' : '该设备已恢复');
         }
 
+        /** 解绑设备：收回这台设备占的名额，旧手机下次打开要重新激活。
+            换手机时必须先解绑，否则 max_devices=1 的码永远激活不了新机。
+            解绑只解除"这台设备能用"，不动板块里的资料。 */
+        case 'admin/license-device-unbind': {
+            $a = admin_required();
+            perm_check_cap($a, 'license');
+            $id = inp_int('id');
+            $db = db();
+            $st = $db->prepare('SELECT * FROM activations WHERE id=?');
+            $st->execute([$id]);
+            $d = $st->fetch();
+            if (!$d) fail('设备记录不存在');
+            if ($d['status'] === '已解绑') fail('这台设备已经解绑过了，不用重复操作');
+
+            $db->beginTransaction();
+            try {
+                $db->prepare("UPDATE activations SET status='已解绑', note=? WHERE id=?")
+                   ->execute(['后台解绑，腾出设备名额', $id]);
+                /* 名额最多扣到 0，防止历史数据把 used_count 扣成负数 */
+                $db->prepare('UPDATE activation_codes SET used_count=GREATEST(used_count-1,0) WHERE id=?')
+                   ->execute([(int)$d['code_id']]);
+                /* 作废设备凭证：旧手机下次请求直接失效，必须重新激活 */
+                try {
+                    $db->prepare('DELETE FROM device_tokens WHERE activation_id=?')->execute([$id]);
+                } catch (Throwable $e) {}
+                $db->prepare("UPDATE activation_codes SET status=IF(used_count>0,'已激活','未激活') WHERE id=? AND status<>'已停用'")
+                   ->execute([(int)$d['code_id']]);
+                license_log('解绑', (int)$d['code_id'], (string)$d['code'], $id, (string)$d['device_id'],
+                            0, 0, '后台解绑设备，设备名额已收回', (string)($a['email'] ?: ''));
+                $db->commit();
+            } catch (Throwable $e) {
+                if ($db->inTransaction()) $db->rollBack();
+                fail($e->getMessage());
+            }
+            ok(null, '已解绑，这台设备的名额可以给新手机用了');
+        }
+
         /** 充能：延长授权天数，可对单台设备，也可对整张码下的所有设备 */
         case 'admin/license-boost': {
             $a = admin_required();
