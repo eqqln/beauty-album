@@ -936,20 +936,24 @@ extension UIImage {
 // MARK: - 格式化工具
 
 enum Fmt {
+    /// 界面统一用中文日期：2026年11月11日 23:26
     static let dateTime: DateFormatter = {
         let f = DateFormatter()
         f.locale = Locale(identifier: "zh_CN")
-        f.dateFormat = "yyyy-MM-dd HH:mm"
+        f.calendar = Calendar(identifier: .gregorian)
+        f.dateFormat = "yyyy年M月d日 HH:mm"
         return f
     }()
 
     static let dateOnly: DateFormatter = {
         let f = DateFormatter()
         f.locale = Locale(identifier: "zh_CN")
-        f.dateFormat = "yyyy-MM-dd"
+        f.calendar = Calendar(identifier: .gregorian)
+        f.dateFormat = "yyyy年M月d日"
         return f
     }()
 
+    /// 文件名用，保持 ASCII，别改
     static let stamp: DateFormatter = {
         let f = DateFormatter()
         f.locale = Locale(identifier: "en_US_POSIX")
@@ -978,17 +982,71 @@ enum Fmt {
         return f
     }()
 
-    static let weekdayOnly: DateFormatter = {
+    /// 月日 + 时间，卡片里用：11月11日 23:26
+    static let monthDayTime: DateFormatter = {
         let f = DateFormatter()
         f.locale = Locale(identifier: "zh_CN")
-        f.dateFormat = "EEE"
+        f.calendar = Calendar(identifier: .gregorian)
+        f.dateFormat = "M月d日 HH:mm"
         return f
     }()
+
+    /// 服务端回来的字符串（2026-11-11 23:26:00 / 2026-11-11 / ISO8601）
+    private static let serverFull: DateFormatter = {
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.dateFormat = "yyyy-MM-dd HH:mm:ss"
+        return f
+    }()
+
+    private static let serverDay: DateFormatter = {
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.dateFormat = "yyyy-MM-dd"
+        return f
+    }()
+
+    private static let serverISO: ISO8601DateFormatter = {
+        let f = ISO8601DateFormatter()
+        f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return f
+    }()
+
+    /// 服务端时间串 → 2026年11月11日（解析不出来就原样返回）
+    static func cnDate(_ raw: String?) -> String {
+        guard let s = raw?.trimmingCharacters(in: .whitespaces), !s.isEmpty else { return "" }
+        if let d = parseServer(s) { return dateOnly.string(from: d) }
+        return String(s.prefix(10))
+    }
+
+    /// 服务端时间串 → 2026年11月11日 23:26
+    static func cnDateTime(_ raw: String?) -> String {
+        guard let s = raw?.trimmingCharacters(in: .whitespaces), !s.isEmpty else { return "" }
+        if let d = parseServer(s) { return dateTime.string(from: d) }
+        return s.count >= 16 ? String(s.prefix(16)) : s
+    }
+
+    private static func parseServer(_ s: String) -> Date? {
+        if let d = serverFull.date(from: s) { return d }
+        if let d = serverDay.date(from: String(s.prefix(10))) { return d }
+        if let d = serverISO.date(from: s) { return d }
+        let iso = ISO8601DateFormatter()
+        if let d = iso.date(from: s) { return d }
+        return nil
+    }
 
     static func time(_ d: Date) -> String { timeOnly.string(from: d) }
     static func dayNumber(_ d: Date) -> String { dayOnly.string(from: d) }
     static func monthLabel(_ d: Date) -> String { monthOnly.string(from: d) }
-    static func weekday(_ d: Date) -> String { weekdayOnly.string(from: d) }
+
+    /// 周几固定中文，不跟系统语言走
+    static func weekday(_ d: Date) -> String {
+        let names = ["周日", "周一", "周二", "周三", "周四", "周五", "周六"]
+        var cal = Calendar(identifier: .gregorian)
+        cal.locale = Locale(identifier: "zh_CN")
+        let i = cal.component(.weekday, from: d)
+        return names[max(0, min(6, i - 1))]
+    }
 
     static func money(_ value: Double) -> String {
         if value == value.rounded() {

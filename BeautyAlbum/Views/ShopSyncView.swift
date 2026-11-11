@@ -28,9 +28,7 @@ struct ShopSyncCard: View {
 
     private var timeText: String {
         guard let d = sync.lastSyncAt else { return "还没同步过" }
-        let f = DateFormatter()
-        f.dateFormat = "MM-dd HH:mm"
-        return "上次同步 " + f.string(from: d)
+        return "上次同步 " + Fmt.monthDayTime.string(from: d)
     }
 
     var body: some View {

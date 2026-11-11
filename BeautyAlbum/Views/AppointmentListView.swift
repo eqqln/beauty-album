@@ -310,6 +310,7 @@ struct AppointmentEditSheet: View {
                     TextField("项目，例如 面部补水护理", text: $service)
                     DatePicker("时间", selection: $date,
                                displayedComponents: [.date, .hourAndMinute])
+                        .environment(\.locale, Locale(identifier: "zh_CN"))
                     Picker("时长", selection: $duration) {
                         ForEach([30, 45, 60, 90, 120, 150, 180], id: \.self) { m in
                             Text("\(m) 分钟").tag(m)

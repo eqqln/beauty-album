@@ -54,7 +54,7 @@ struct CloudMember: Codable, Equatable {
 
     var expireText: String {
         guard let e = expireAt, e.count >= 10 else { return "未开通" }
-        return String(e.prefix(10))
+        return Fmt.cnDate(e)
     }
 
     var isExpired: Bool {
@@ -132,7 +132,7 @@ struct CloudWalletLog: Codable, Identifiable, Equatable {
 
     var timeText: String {
         guard let s = createdAt, s.count >= 16 else { return "" }
-        return String(s.prefix(16))
+        return Fmt.cnDateTime(s)
     }
 }
 
