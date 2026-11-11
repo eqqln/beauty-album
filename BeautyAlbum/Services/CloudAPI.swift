@@ -162,6 +162,10 @@ struct CloudSiteInfo: Codable {
     var contactPhone: String?
     var rechargeEnabled: String?
     var rechargeNotice: String?
+    /// 后台控制的网址显示方式：plain / encrypted
+    var urlDisplay: String?
+    var apiBase: String?
+    var apiBaseEnc: String?
 
     enum CodingKeys: String, CodingKey {
         case notice
@@ -173,6 +177,9 @@ struct CloudSiteInfo: Codable {
         case contactPhone = "contact_phone"
         case rechargeEnabled = "recharge_enabled"
         case rechargeNotice = "recharge_notice"
+        case urlDisplay = "url_display"
+        case apiBase = "api_base"
+        case apiBaseEnc = "api_base_enc"
     }
 
     var rechargeOn: Bool { (rechargeEnabled ?? "1") != "0" }
@@ -223,9 +230,14 @@ struct CloudLicenseRedeem: Codable {
     var contact: String?
     var shopName: String?
     var recharge: CloudLicenseRecharge?
+    var tenantID: Int?
+    var ownerName: String?
+    var ownerPhone: String?
+    /// 服务端要求这台设备把云端资料整体恢复一遍（换手机 / 后台点了恢复）
+    var restore: Bool?
 
     enum CodingKeys: String, CodingKey {
-        case code, kind, permanent, notice, contact, recharge
+        case code, kind, permanent, notice, contact, recharge, restore
         case licenseKey = "license_key"
         case syncToken = "sync_token"
         case deviceID = "device_id"
@@ -235,6 +247,9 @@ struct CloudLicenseRedeem: Codable {
         case secondsLeft = "seconds_left"
         case graceDays = "grace_days"
         case shopName = "shop_name"
+        case tenantID = "tenant_id"
+        case ownerName = "owner_name"
+        case ownerPhone = "owner_phone"
     }
 }
 
@@ -252,9 +267,13 @@ struct CloudLicenseVerify: Codable {
     var notice: String?
     var contact: String?
     var shopName: String?
+    var tenantID: Int?
+    var ownerName: String?
+    var ownerPhone: String?
+    var restore: Bool?
 
     enum CodingKeys: String, CodingKey {
-        case active, code, permanent, notice, contact
+        case active, code, permanent, notice, contact, restore
         case expireAt = "expire_at"
         case leftText = "left_text"
         case secondsLeft = "seconds_left"
@@ -263,6 +282,9 @@ struct CloudLicenseVerify: Codable {
         case deviceName = "device_name"
         case serverTime = "server_time"
         case shopName = "shop_name"
+        case tenantID = "tenant_id"
+        case ownerName = "owner_name"
+        case ownerPhone = "owner_phone"
     }
 }
 
@@ -287,7 +309,8 @@ final class CloudAPI {
     var baseURL: String {
         get {
             let v = UserDefaults.standard.string(forKey: "cloud.base") ?? ""
-            return v.isEmpty ? "https://meiyan.shengka.net" : v
+            /* 默认地址不明文写在这里，由 ServerURL 运行时解出来 */
+            return v.isEmpty ? ServerURL.builtin : v
         }
         set { UserDefaults.standard.set(newValue, forKey: "cloud.base") }
     }
@@ -299,6 +322,18 @@ final class CloudAPI {
     }
 
     // MARK: 通用请求
+
+    /// 设备同步凭证：激活后由服务端签发，存在 UserDefaults。
+    /// 会员注册/登录这类不带 token 的请求也要带上它，服务端才知道该落到哪个板块。
+    private var deviceToken: String {
+        UserDefaults.standard.string(forKey: "license.sync.token") ?? ""
+    }
+
+    private func authToken(_ explicit: String?) -> String? {
+        if let t = explicit, !t.isEmpty { return t }
+        let d = deviceToken
+        return d.isEmpty ? nil : d
+    }
 
     private func call<T: Decodable>(_ route: String,
                                     method: String = "GET",
@@ -316,7 +351,7 @@ final class CloudAPI {
         req.httpMethod = method
         req.timeoutInterval = 20
         req.setValue("application/json", forHTTPHeaderField: "Accept")
-        if let t = token, !t.isEmpty {
+        if let t = authToken(token) {
             req.setValue("Bearer \(t)", forHTTPHeaderField: "Authorization")
         }
         if let b = body {
@@ -438,15 +473,23 @@ final class CloudAPI {
     }
 
     /// 兑换激活码：拿到本机授权凭证 + 设备同步凭证
-    func licenseRedeem(code: String, deviceID: String, deviceName: String,
+    func licenseRedeem(code: String, name: String, phone: String,
+                       deviceID: String, deviceName: String,
                        platform: String, appVersion: String) async throws -> CloudLicenseRedeem {
         try await call("license/redeem", method: "POST",
                        body: ["code": code,
+                              "name": name,
+                              "phone": phone,
                               "device_id": deviceID,
                               "device_name": deviceName,
                               "platform": platform,
                               "app_version": appVersion],
                        as: CloudLicenseRedeem.self)
+    }
+
+    /// 恢复完成后回报服务端，清掉「待恢复」标志
+    func licenseRestoreAck(token: String) async {
+        try? await callVoid("license/restore-ack", method: "POST", body: [:], token: token)
     }
 
     /// 启动 / 回前台复核授权
@@ -476,7 +519,7 @@ final class CloudAPI {
         req.httpMethod = method
         req.timeoutInterval = 60
         req.setValue("application/json", forHTTPHeaderField: "Accept")
-        if let t = token, !t.isEmpty {
+        if let t = authToken(token) {
             req.setValue("Bearer \(t)", forHTTPHeaderField: "Authorization")
         }
         if let b = body {

@@ -305,6 +305,8 @@ function license_redeem(array $in): array
     $platform   = trim((string)($in['platform'] ?? ''));
     $appVersion = trim((string)($in['app_version'] ?? ''));
     $memberTok  = trim((string)($in['member_token'] ?? ''));
+    $userName   = trim((string)($in['name'] ?? ''));
+    $userPhone  = trim((string)($in['phone'] ?? ''));
 
     if ($codeRaw === '') fail('请输入激活码');
     if ($deviceId === '' || strlen($deviceId) > 80) fail('设备编号异常，请重装 App 后重试');
@@ -328,6 +330,32 @@ function license_redeem(array $in): array
         if (!empty($c['expire_at']) && $c['expire_at'] < $today) {
             throw new RuntimeException('这张激活码已于 ' . $c['expire_at'] . ' 过期');
         }
+
+        /* ---------- 板块归属 ----------
+           一张码只属于一个人。第一次兑换时用姓名电话开板块，
+           之后同一张码再激活（换手机 / 重装）必须还是这个人。 */
+        $tenant = null;
+        if (!empty($c['tenant_id'])) {
+            $tenant = tenant_row((int)$c['tenant_id']);
+            if (!$tenant) throw new RuntimeException('这张激活码绑定的板块已被删除，请联系管理员');
+            if (($tenant['status'] ?? '正常') !== '正常') {
+                throw new RuntimeException('这个板块已被停用，请联系管理员');
+            }
+            $boundPhone = (string)($tenant['phone'] ?? '');
+            if ($userPhone !== '' && $boundPhone !== '' && $userPhone !== $boundPhone) {
+                throw new RuntimeException('这张激活码已归属「' . $tenant['name'] . '」，请使用你自己的激活码');
+            }
+        } else {
+            if ($userName === '') throw new RuntimeException('请填写使用人姓名');
+            if (!phone_ok($userPhone)) throw new RuntimeException('请填写正确的手机号');
+            $tenant = tenant_ensure($userName, $userPhone, $codeRaw);
+            $db->prepare('UPDATE activation_codes SET tenant_id=? WHERE id=?')
+               ->execute([(int)$tenant['id'], (int)$c['id']]);
+            $c['tenant_id'] = (int)$tenant['id'];
+            license_log('开板块', (int)$c['id'], $codeRaw, null, $deviceId, 0, 0,
+                        $userName . ' / ' . $userPhone, 'App');
+        }
+        $tenantId = (int)$tenant['id'];
 
         $max     = max(1, (int)$c['max_devices']);
         $minutes = (int)($c['duration_minutes'] ?? 0);
@@ -359,16 +387,16 @@ function license_redeem(array $in): array
 
         if ($same) {
             $actId = (int)$same['id'];
-            $db->prepare('UPDATE activations SET license_key=?, device_name=?, platform=?, app_version=?, activated_at=?, expire_at=?, last_seen_at=?, status=?, member_id=?, member_phone=?, note=? WHERE id=?')
+            $db->prepare('UPDATE activations SET license_key=?, device_name=?, platform=?, app_version=?, activated_at=?, expire_at=?, last_seen_at=?, status=?, member_id=?, member_phone=?, tenant_id=?, note=? WHERE id=?')
                 ->execute([$key, $deviceName, $platform, $appVersion, $now, $expire, $now, '生效中',
-                           $same['member_id'], $same['member_phone'], $same['note'], $actId]);
+                           $same['member_id'], $same['member_phone'], $tenantId, $same['note'], $actId]);
         } else {
             if ((int)$c['used_count'] >= $max) {
                 throw new RuntimeException('这张激活码的 ' . $max . ' 台设备名额已用完，请联系门店');
             }
-            $db->prepare('INSERT INTO activations(code_id,code,device_id,device_name,platform,app_version,license_key,activated_at,expire_at,last_seen_at,status) VALUES(?,?,?,?,?,?,?,?,?,?,?)')
+            $db->prepare('INSERT INTO activations(code_id,code,device_id,device_name,platform,app_version,license_key,activated_at,expire_at,last_seen_at,status,tenant_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)')
                 ->execute([(int)$c['id'], $codeRaw, $deviceId, $deviceName, $platform, $appVersion,
-                           $key, $now, $expire, $now, '生效中']);
+                           $key, $now, $expire, $now, '生效中', $tenantId]);
             $actId = (int)$db->lastInsertId();
             $db->prepare("UPDATE activation_codes SET used_count=used_count+1, status='已激活' WHERE id=?")
                 ->execute([(int)$c['id']]);
@@ -391,6 +419,11 @@ function license_redeem(array $in): array
         'amount' => (float)$c['amount'], 'bonus' => (float)$c['bonus'], 'points' => (int)$c['points'],
     ], $member);
 
+    /* 这块板是这次激活才开的？新开的就不用再拉一遍旧数据了 */
+    $restore = ((int)($tenant['restore_flag'] ?? 0) === 1);
+    tenant_sync_device_count($tenantId);
+    tenant_touch($tenantId);
+
     return [
         'license_key'   => $key,
         'sync_token'    => $syncToken,
@@ -406,7 +439,14 @@ function license_redeem(array $in): array
         'recharge'      => $credit,
         'notice'        => license_setting('license_notice', ''),
         'contact'       => license_setting('license_contact', '请联系门店获取激活码'),
-        'shop_name'     => setting_get('shop_name', '美颜相册'),
+        'shop_name'     => (string)($tenant['shop_name'] ?? '') !== ''
+                            ? (string)$tenant['shop_name']
+                            : tenant_setting_get($tenantId, 'shop_name', '美颜相册'),
+        'tenant_id'     => $tenantId,
+        'tenant'        => tenant_out($tenant),
+        'owner_name'    => (string)($tenant['name'] ?? ''),
+        'owner_phone'   => (string)($tenant['phone'] ?? ''),
+        'restore'       => $restore,
     ];
 }
 
@@ -432,6 +472,13 @@ function license_verify(array $in): array
     db()->prepare('UPDATE activations SET last_seen_at=?, app_version=? WHERE id=?')
         ->execute([now(), $appVer, (int)$a['id']]);
 
+    $tenantId = (int)($a['tenant_id'] ?? 0);
+    $tenant   = $tenantId > 0 ? tenant_row($tenantId) : null;
+    if ($tenant) {
+        if (($tenant['status'] ?? '正常') !== '正常') fail('这个板块已被停用，请联系管理员', 403);
+        tenant_touch($tenantId);
+    }
+
     // 同步凭证若丢失（清过缓存 / 换机恢复），这里补发一张
     $st = db()->prepare('SELECT token FROM device_tokens WHERE activation_id=? AND expire_at>? LIMIT 1');
     $st->execute([(int)$a['id'], now()]);
@@ -451,7 +498,14 @@ function license_verify(array $in): array
         'server_time'  => now(),
         'notice'       => license_setting('license_notice', ''),
         'contact'      => license_setting('license_contact', '请联系门店获取激活码'),
-        'shop_name'    => setting_get('shop_name', '美颜相册'),
+        'shop_name'    => $tenant
+                            ? tenant_setting_get($tenantId, 'shop_name', (string)$tenant['shop_name'])
+                            : setting_get('shop_name', '美颜相册'),
+        'tenant_id'    => $tenantId,
+        'tenant'       => $tenant ? tenant_out($tenant) : null,
+        'owner_name'   => $tenant ? (string)$tenant['name'] : '',
+        'owner_phone'  => $tenant ? (string)$tenant['phone'] : '',
+        'restore'      => $tenant ? ((int)($tenant['restore_flag'] ?? 0) === 1) : false,
     ];
 }
 

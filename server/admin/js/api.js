@@ -6,9 +6,27 @@
 
   var BASE = (window.API_BASE || '') + '/meiyan-api/index.php';
   var TOKEN_KEY = 'meiyan_admin_token';
+  var TENANT_KEY = 'meiyan_admin_tenant';
 
   function token() { return localStorage.getItem(TOKEN_KEY) || ''; }
   function setToken(t) { if (t) localStorage.setItem(TOKEN_KEY, t); else localStorage.removeItem(TOKEN_KEY); }
+
+  /* 当前板块：0 = 默认板块。平台管理员可以切换，绑定了板块的员工改不了 */
+  function tenant() {
+    var v = parseInt(localStorage.getItem(TENANT_KEY) || '0', 10);
+    return isNaN(v) || v < 0 ? 0 : v;
+  }
+  function setTenant(id) {
+    id = parseInt(id || 0, 10);
+    if (isNaN(id) || id < 0) id = 0;
+    if (id) localStorage.setItem(TENANT_KEY, String(id));
+    else localStorage.removeItem(TENANT_KEY);
+  }
+
+  function tenantHeaders() {
+    var t = tenant();
+    return t > 0 ? { 'X-Tenant-Id': String(t) } : {};
+  }
 
   async function request(r, opts) {
     opts = opts || {};
@@ -21,6 +39,8 @@
     }
     var headers = {};
     if (token()) headers['Authorization'] = 'Bearer ' + token();
+    var th = tenantHeaders();
+    Object.keys(th).forEach(function (k) { headers[k] = th[k]; });
     var init = { method: opts.method || 'GET', headers: headers };
     if (opts.body) {
       headers['Content-Type'] = 'application/json';
@@ -53,6 +73,8 @@
   window.API = {
     token: token,
     setToken: setToken,
+    tenant: tenant,
+    setTenant: setTenant,
     get: function (r, query) { return request(r, { query: query }); },
     post: function (r, body) { return request(r, { method: 'POST', body: body || {} }); },
     list: function (m, query) {
@@ -67,7 +89,7 @@
       fd.append('file', file);
       var res = await fetch(BASE + '?r=upload', {
         method: 'POST',
-        headers: token() ? { 'Authorization': 'Bearer ' + token() } : {},
+        headers: Object.assign({}, token() ? { 'Authorization': 'Bearer ' + token() } : {}, tenantHeaders()),
         body: fd
       });
       var json = await res.json().catch(function () { return { ok: false, msg: '上传失败' }; });
@@ -86,7 +108,9 @@
           }
         });
       }
-      var res = await fetch(url, { headers: token() ? { 'Authorization': 'Bearer ' + token() } : {} });
+      var res = await fetch(url, {
+        headers: Object.assign({}, token() ? { 'Authorization': 'Bearer ' + token() } : {}, tenantHeaders())
+      });
       var ct = res.headers.get('Content-Type') || '';
       if (ct.indexOf('application/json') >= 0) {
         var j = await res.json().catch(function () { return { ok: false, msg: '下载失败' }; });

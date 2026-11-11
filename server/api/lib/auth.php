@@ -56,6 +56,7 @@ function admin_out(array $a): array
         'role' => $a['role'],
         'status' => $a['status'] ?? '正常',
         'note' => $a['note'] ?? '',
+        'tenant_id' => (int)($a['tenant_id'] ?? 0),
         'perm' => function_exists('perm_out') ? perm_out($a) : null,
     ];
 }

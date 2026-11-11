@@ -357,7 +357,8 @@ function sms_dispatch(string $code, array $cfg, string $phone, string $tpl, arra
     }
 }
 
-function setting_get(string $k, string $def = ''): string
+/** 读全局设置（不分板块） */
+function setting_get_global(string $k, string $def = ''): string
 {
     $st = db()->prepare('SELECT v FROM settings WHERE k=?');
     $st->execute([$k]);
@@ -365,10 +366,33 @@ function setting_get(string $k, string $def = ''): string
     return $r === false ? $def : (string)$r;
 }
 
-function setting_set(string $k, string $v): void
+/** 写全局设置（不分板块） */
+function setting_set_global(string $k, string $v): void
 {
     $st = db()->prepare('INSERT INTO settings(k,v) VALUES(?,?) ON DUPLICATE KEY UPDATE v=VALUES(v)');
     $st->execute([$k, $v]);
+}
+
+/**
+ * 读设置。店名/标语/收款码这类跟着板块走，激活码/短信/安装包走全局。
+ * 板块没单独设过的项自动退回全局默认值。
+ */
+function setting_get(string $k, string $def = ''): string
+{
+    if (function_exists('tenant_is_scoped_key') && tenant_is_scoped_key($k)) {
+        $tid = tenant_current_id();
+        if ($tid > 0) return tenant_setting_get($tid, $k, $def);
+    }
+    return setting_get_global($k, $def);
+}
+
+function setting_set(string $k, string $v): void
+{
+    if (function_exists('tenant_is_scoped_key') && tenant_is_scoped_key($k)) {
+        $tid = tenant_current_id();
+        if ($tid > 0) { tenant_setting_set($tid, $k, $v); return; }
+    }
+    setting_set_global($k, $v);
 }
 
 function sms_provider_row(string $code): ?array

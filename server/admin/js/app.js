@@ -31,6 +31,7 @@
     { key: 'recharge', title: '充值卡', icon: '💳', cap: 'recharge', sub: '批量生成卡号卡密，App 内直接充值' },
     { key: 'm:wallet', title: '钱包流水', icon: '📒', sub: '充值、消费、调整的完整流水' },
     { group: '系统' },
+    { key: 'tenants', title: '板块管理', icon: '🗂️', cap: 'license', sub: '一个激活码一个板块，资料互不掺和' },
     { key: 'license', title: '激活码', icon: '🔑', cap: 'license', sub: '软件授权、设备管理、充能续期' },
     { key: 'staff', title: '员工管理', icon: '🧑‍💼', cap: 'staff', sub: '加员工、设岗位、分权限' },
     { key: 'sms', title: '短信', icon: '✉️', cap: 'sms', sub: '多家短信通道与发送记录' },
@@ -237,8 +238,62 @@
       }
     } catch (e) { /* ignore */ }
     buildNav();
+    await initTenantPicker();
     if (!location.hash) location.hash = '#/overview';
     route();
+  }
+
+  /* ---------------- 板块切换器 ---------------- */
+
+  /**
+   * 平台账号（tenant_id = 0）可以在顶栏切换板块，所有列表跟着变。
+   * 绑定了板块的员工看不到切换器，永远只看自己那块。
+   */
+  async function initTenantPicker() {
+    var wrap = $('tenantPickWrap');
+    var sel = $('tenantPick');
+    if (!wrap || !sel) return;
+    if ((state.admin && state.admin.tenant_id) > 0) { wrap.hidden = true; return; }
+
+    var rows = [];
+    try {
+      var r = await API.get('admin/tenant-list');
+      rows = (r && r.rows) || [];
+    } catch (e) {
+      wrap.hidden = true;
+      return;
+    }
+    if (!rows.length) { wrap.hidden = true; return; }
+
+    /* 选中的板块可能已被删除，退回默认板块 */
+    var cur = API.tenant();
+    if (cur > 0 && !rows.some(function (t) { return t.id === cur; })) {
+      API.setTenant(0);
+      cur = 0;
+    }
+
+    sel.innerHTML = rows.map(function (t) {
+      var label = (t.shop_name || t.name || ('板块 #' + t.id));
+      if (t.id === 0) label = '默认板块';
+      if (t.status !== '正常') label += '（已停用）';
+      return '<option value="' + t.id + '"' + (t.id === cur ? ' selected' : '') + '>' +
+        UI.esc(label) + '</option>';
+    }).join('');
+    wrap.hidden = false;
+
+    sel.onchange = async function () {
+      API.setTenant(sel.value);
+      /* 店名、标语这些跟着板块走，切完要重新读一遍设置 */
+      try {
+        state.settings = await API.get('settings/get') || {};
+        if (state.settings.shop_name) {
+          $('sideShopName').textContent = state.settings.shop_name;
+          document.title = state.settings.shop_name + ' · 管理后台';
+        }
+      } catch (e) { /* ignore */ }
+      route();
+      UI.toast('已切换到「' + (sel.options[sel.selectedIndex] || {}).text + '」', 'ok');
+    };
   }
 
   /* ---------------- 权限判断 ---------------- */
@@ -324,6 +379,7 @@
     if (nav.key === 'sms') return renderSms(view);
     if (nav.key === 'settings') return renderSettings(view);
     if (nav.key === 'staff') return renderStaff(view);
+    if (nav.key === 'tenants') return renderTenants(view);
     if (nav.key === 'license') return renderLicense(view);
     if (nav.key.indexOf('m:') === 0) return CRUD.render(view, nav.key.slice(2));
   }
@@ -1354,9 +1410,18 @@
         },
         {
           title: '安装包', fields: [
-            { k: 'api_base', label: '服务器地址', ph: 'https://meiyan.shengka.net' },
+            { k: 'api_base', label: '服务器地址', ph: 'https://你的域名' },
             { k: 'app_version', label: '当前版本号', ph: '1.1.0' },
             { k: 'install_note', label: '安装说明', type: 'textarea' }
+          ]
+        },
+        {
+          title: '网址显示方式', fields: [
+            { k: 'url_display', label: 'App「我的」页里的服务器网址怎么显示', type: 'select',
+              options: [
+                { v: 'encrypted', t: '加密显示（推荐，别人抄不走域名）' },
+                { v: 'plain', t: '明文显示（https://...）' }
+              ] }
           ]
         },
         {
@@ -1410,9 +1475,19 @@
           '<div style="display:grid;grid-template-columns:1fr 1fr;gap:14px">' +
           g.fields.map(function (f) {
             var v = s[f.k] || '';
-            var ctl = f.type === 'textarea'
-              ? '<textarea data-s="' + f.k + '">' + UI.esc(v) + '</textarea>'
-              : '<input type="text" data-s="' + f.k + '" value="' + UI.esc(v) + '" placeholder="' + UI.esc(f.ph || '') + '">';
+            var ctl;
+            if (f.type === 'textarea') {
+              ctl = '<textarea data-s="' + f.k + '">' + UI.esc(v) + '</textarea>';
+            } else if (f.type === 'select') {
+              ctl = '<select data-s="' + f.k + '">' +
+                (f.options || []).map(function (o) {
+                  return '<option value="' + UI.esc(o.v) + '"' +
+                    (String(v) === o.v ? ' selected' : '') + '>' + UI.esc(o.t) + '</option>';
+                }).join('') + '</select>';
+            } else {
+              ctl = '<input type="text" data-s="' + f.k + '" value="' + UI.esc(v) +
+                '" placeholder="' + UI.esc(f.ph || '') + '">';
+            }
             return '<label class="field"><span>' + UI.esc(f.label) + '</span>' + ctl + '</label>';
           }).join('') + '</div></div>';
       }).join('');
@@ -2038,6 +2113,225 @@
     if (caps.backup) out.push('<span class="badge info">备份</span>');
     if (caps.sms) out.push('<span class="badge info">短信</span>');
     return out.join(' ');
+  }
+
+  /* ---------------- 板块管理 ---------------- */
+
+  /**
+   * 一个激活码 = 一个板块。
+   * 这里列出所有板块，点「进入」就把顶栏切过去，之后所有页面都只看那一块的数据。
+   */
+  async function renderTenants(view) {
+    var kw = '';
+    var data = null;
+
+    async function load() {
+      try {
+        data = await API.get('admin/tenant-list', kw ? { kw: kw } : null);
+      } catch (e) {
+        view.innerHTML = UI.empty(e.message, '⚠️');
+        return;
+      }
+      paint();
+    }
+
+    function card(t) {
+      var c = t.counts || {};
+      var on = (data && data.current) === t.id;
+      var off = t.status !== '正常';
+      var nums = [
+        ['客户', c.customers || 0],
+        ['照片', c.photos || 0],
+        ['步骤', c.steps || 0],
+        ['产品', c.products || 0],
+        ['预约', c.appointments || 0]
+      ].map(function (x) {
+        return '<div><b>' + UI.num(x[1]) + '</b><span>' + x[0] + '</span></div>';
+      }).join('');
+
+      var title = t.id === 0 ? '默认板块' : (t.shop_name || t.name || ('板块 #' + t.id));
+      var sub = [];
+      if (t.name && t.name !== title) sub.push('使用者 ' + t.name);
+      if (t.phone) sub.push(t.phone);
+      if (t.code) sub.push(t.code);
+      if (t.license_left) sub.push('授权 ' + t.license_left);
+
+      return '<div class="tenant-card' + (on ? ' on' : '') + '" data-id="' + t.id + '">' +
+        '<div class="tenant-head">' +
+          '<div style="flex:1;min-width:0">' +
+            '<div class="tenant-name">' + UI.esc(title) + '</div>' +
+            '<div class="tenant-sub">' + UI.esc(sub.join(' · ') || '还没有归属人') + '</div>' +
+          '</div>' +
+          (on ? '<span class="tenant-badge">当前</span>' : '') +
+          (off ? '<span class="tenant-badge off">已停用</span>' : '') +
+          (t.restore_flag ? '<span class="tenant-badge">待恢复</span>' : '') +
+        '</div>' +
+        '<div class="tenant-nums">' + nums + '</div>' +
+        '<div class="tenant-acts">' +
+          (on
+            ? '<button class="btn ghost sm" data-act="leave">回到默认板块</button>'
+            : '<button class="btn primary sm" data-act="enter">进入这个板块</button>') +
+          '<button class="btn ghost sm" data-act="restore">恢复到手机</button>' +
+          '<button class="btn ghost sm" data-act="edit">编辑</button>' +
+          '<button class="btn ghost sm" data-act="toggle">' + (off ? '启用' : '停用') + '</button>' +
+          (t.id === 0 ? '' : '<button class="btn ghost sm" data-act="del">删除</button>') +
+        '</div>' +
+      '</div>';
+    }
+
+    function paint() {
+      var rows = (data && data.rows) || [];
+      var total = rows.length;
+      view.innerHTML =
+        '<div class="card" style="margin-bottom:16px">' +
+          '<div class="rc-head">' +
+            '<strong>板块管理</strong>' +
+            '<span class="td-sub">每个激活码对应一个人、一块独立资料区。客户、相册、护理步骤、产品、预约都只属于自己那块，和别人不掺和</span>' +
+          '</div>' +
+          '<div class="bk-actions" style="margin-top:12px">' +
+            '<label class="field" style="flex:1;min-width:200px"><span>搜索</span>' +
+              '<input type="text" id="tnKw" value="' + UI.esc(kw) + '" placeholder="姓名 / 电话 / 板块名 / 激活码"></label>' +
+            '<button class="btn ghost" id="tnSearch">搜索</button>' +
+            '<button class="btn primary" id="tnNew">手工开一个板块</button>' +
+          '</div>' +
+          '<p class="td-sub" style="margin-top:10px">共 ' + total + ' 个板块。正常情况下不需要手工建：客户在 App 里输激活码并填姓名电话，系统会自动给他开板块。</p>' +
+        '</div>' +
+        (rows.length
+          ? '<div class="tenant-grid">' + rows.map(card).join('') + '</div>'
+          : UI.empty('还没有板块', '🗂️'));
+
+      var sBtn = $('tnSearch');
+      if (sBtn) sBtn.onclick = function () { kw = ($('tnKw').value || '').trim(); load(); };
+      var kIn = $('tnKw');
+      if (kIn) kIn.onkeydown = function (e) { if (e.key === 'Enter') { kw = kIn.value.trim(); load(); } };
+      var nBtn = $('tnNew');
+      if (nBtn) nBtn.onclick = newTenant;
+
+      view.querySelectorAll('.tenant-card').forEach(function (el) {
+        var id = parseInt(el.getAttribute('data-id'), 10);
+        var t = rows.filter(function (x) { return x.id === id; })[0];
+        if (!t) return;
+        el.querySelectorAll('[data-act]').forEach(function (b) {
+          b.onclick = function () { act(b.getAttribute('data-act'), t); };
+        });
+      });
+    }
+
+    async function act(a, t) {
+      if (a === 'enter' || a === 'leave') {
+        API.setTenant(a === 'leave' ? 0 : t.id);
+        try {
+          state.settings = await API.get('settings/get') || {};
+          if (state.settings.shop_name) {
+            $('sideShopName').textContent = state.settings.shop_name;
+            document.title = state.settings.shop_name + ' · 管理后台';
+          }
+        } catch (e) { /* ignore */ }
+        await initTenantPicker();
+        route();
+        UI.toast(a === 'leave' ? '已回到默认板块' : ('已进入「' + (t.shop_name || t.name) + '」'), 'ok');
+        return;
+      }
+
+      if (a === 'restore') {
+        UI.confirmBox('恢复到手机',
+          '标记之后，' + (t.shop_name || t.name) + ' 下次打开 App 或激活时，会自动把服务器上的全部资料下载到手机并覆盖本机数据。确认吗？',
+          async function () {
+            try {
+              await API.post('admin/tenant-restore', { id: t.id });
+              UI.toast('已标记，等他打开 App 就会自动恢复', 'ok');
+              load();
+            } catch (e) { UI.toast(e.message, 'bad'); }
+          });
+        return;
+      }
+
+      if (a === 'toggle') {
+        var next = t.status === '正常' ? '停用' : '正常';
+        try {
+          await API.post('admin/tenant-save', { id: t.id, status: next });
+          UI.toast('已' + (next === '正常' ? '启用' : '停用'), 'ok');
+          load();
+        } catch (e) { UI.toast(e.message, 'bad'); }
+        return;
+      }
+
+      if (a === 'del') {
+        UI.confirmBox('删除板块',
+          '会连同这个板块里的客户、相册、步骤、产品、预约一起删掉，不能恢复。确认删除「' + (t.shop_name || t.name) + '」？',
+          async function () {
+            try {
+              await API.post('admin/tenant-delete', { id: t.id });
+              UI.toast('板块已删除', 'ok');
+              load();
+            } catch (e) { UI.toast(e.message, 'bad'); }
+          }, true);
+        return;
+      }
+
+      if (a === 'edit') editTenant(t);
+    }
+
+    function editTenant(t) {
+      var m = UI.modal({
+        title: '编辑板块',
+        body:
+          '<div style="display:grid;gap:12px">' +
+            '<label class="field"><span>使用者姓名</span><input type="text" id="teName" value="' + UI.esc(t.name || '') + '"></label>' +
+            '<label class="field"><span>手机号</span><input type="text" id="tePhone" value="' + UI.esc(t.phone || '') + '"></label>' +
+            '<label class="field"><span>板块名称（显示在 App 上）</span><input type="text" id="teShop" value="' + UI.esc(t.shop_name || '') + '"></label>' +
+            '<label class="field"><span>备注</span><input type="text" id="teNote" value="' + UI.esc(t.note || '') + '"></label>' +
+          '</div>',
+        buttons: [
+          { label: '取消', kind: 'ghost' },
+          { label: '保存', kind: 'primary', onClick: async function (mm) {
+              try {
+                await API.post('admin/tenant-save', {
+                  id: t.id,
+                  name: $('teName').value.trim(),
+                  phone: $('tePhone').value.trim(),
+                  shop_name: $('teShop').value.trim(),
+                  note: $('teNote').value.trim()
+                });
+                mm.close();
+                UI.toast('已保存', 'ok');
+                load();
+              } catch (e) { UI.toast(e.message, 'bad'); }
+            } }
+        ]
+      });
+      return m;
+    }
+
+    function newTenant() {
+      UI.modal({
+        title: '手工开一个板块',
+        body:
+          '<div style="display:grid;gap:12px">' +
+            '<label class="field"><span>使用者姓名</span><input type="text" id="tnName" placeholder="例如 宁子"></label>' +
+            '<label class="field"><span>手机号</span><input type="text" id="tnPhone" placeholder="用于认人，同一个人换码不会丢数据"></label>' +
+            '<label class="field"><span>板块名称</span><input type="text" id="tnShop" placeholder="留空则用姓名"></label>' +
+          '</div>' +
+          '<p class="td-sub" style="margin-top:10px">建好之后在「激活码」页生成一张码，把码发给他；他激活时填同样的姓名电话，资料就落进这块。</p>',
+        buttons: [
+          { label: '取消', kind: 'ghost' },
+          { label: '创建', kind: 'primary', onClick: async function (m) {
+              try {
+                await API.post('admin/tenant-create', {
+                  name: $('tnName').value.trim(),
+                  phone: $('tnPhone').value.trim(),
+                  shop_name: $('tnShop').value.trim()
+                });
+                m.close();
+                UI.toast('板块已创建', 'ok');
+                load();
+              } catch (e) { UI.toast(e.message, 'bad'); }
+            } }
+        ]
+      });
+    }
+
+    await load();
   }
 
   async function renderStaff(view) {

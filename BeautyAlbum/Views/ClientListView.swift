@@ -7,6 +7,9 @@ struct RootView: View {
 
     @State private var backgroundedAt: Date?
     @State private var tab: Int = 0
+    /// 服务端要求把云端资料整份恢复到本机
+    @State private var showRestorePrompt = false
+    @ObservedObject private var sync = SyncService.shared
 
     var body: some View {
         Group {
@@ -20,6 +23,30 @@ struct RootView: View {
                 mainTabs
             }
         }
+        .overlay(alignment: .top) {
+            if sync.running, !sync.progressText.isEmpty, license.state == .active {
+                HStack(spacing: 8) {
+                    ProgressView().scaleEffect(0.8)
+                    Text(sync.progressText)
+                        .font(.system(size: 12.5))
+                        .foregroundColor(Theme.ink)
+                }
+                .padding(.horizontal, 14)
+                .padding(.vertical, 9)
+                .background(Theme.card)
+                .clipShape(Capsule())
+                .shadow(color: .black.opacity(0.10), radius: 10, y: 4)
+                .padding(.top, 6)
+            }
+        }
+        .alert("从服务器恢复资料", isPresented: $showRestorePrompt) {
+            Button("开始恢复") {
+                Task { _ = await SyncService.shared.restoreFromServer(store: store) }
+            }
+            Button("稍后", role: .cancel) { license.restoreNeeded = false }
+        } message: {
+            Text("服务器上有这个板块的全部资料：客户、相册、护理步骤、产品、预约。\n恢复会用云端内容覆盖本机现有数据，请确认这台手机上的资料可以丢弃。")
+        }
         .onAppear {
             store.runAutoBackupIfNeeded()
             // 先校验授权，通过后才挂上自动同步
@@ -27,6 +54,7 @@ struct RootView: View {
                 await license.bootstrap()
                 if license.state == .active {
                     await SyncService.shared.activate(store: store)
+                    if license.restoreNeeded { showRestorePrompt = true }
                 }
             }
         }
@@ -34,6 +62,9 @@ struct RootView: View {
             if s == .active {
                 Task { await SyncService.shared.activate(store: store) }
             }
+        }
+        .onChange(of: license.restoreNeeded) { need in
+            if need, license.state == .active { showRestorePrompt = true }
         }
         .onChange(of: scenePhase) { phase in
             switch phase {

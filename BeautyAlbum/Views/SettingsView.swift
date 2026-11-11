@@ -443,12 +443,13 @@ struct SettingsView: View {
             HStack {
                 Label("后台地址", systemImage: "server.rack")
                 Spacer()
-                Text(CloudAPI.shared.baseURL.replacingOccurrences(of: "https://", with: ""))
+                Text(ServerURL.display(CloudAPI.shared.baseURL)
+                        .replacingOccurrences(of: "https://", with: ""))
                     .font(.system(size: 12))
                     .foregroundColor(Theme.muted)
                     .lineLimit(1)
             }
-            TextField("https://meiyan.shengka.net", text: Binding(
+            TextField("https://你的域名", text: Binding(
                 get: { CloudAPI.shared.baseURL },
                 set: { CloudAPI.shared.baseURL = $0 }
             ))

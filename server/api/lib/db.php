@@ -32,8 +32,10 @@ function db_config(): array
  * 3 → 员工权限 perms、视频字段、字段级合并 field_ts
  * 4 → 视频封面地址 thumb_url
  * 5 → 软件激活码：activation_codes / activations / activation_logs
+ * 6 → 多板块（多租户）：tenants / tenant_settings，业务表加 tenant_id
+ * 7 → 修正默认板块 id（AUTO_INCREMENT 把 0 改成 1，导致老数据对不上）
  */
-const SCHEMA_VERSION = 5;
+const SCHEMA_VERSION = 7;
 
 function db(): PDO
 {
@@ -166,6 +168,98 @@ function migrate_schema(PDO $db): void
     add_column($db, 'photos', 'thumb_name', "VARCHAR(120) NULL COMMENT '视频封面文件名'");
     add_column($db, 'photos', 'size_bytes', "BIGINT NOT NULL DEFAULT 0");
     add_column($db, 'photos', 'thumb_url', "VARCHAR(255) NULL COMMENT '视频封面地址'");
+
+    /* ---------- 6：多板块 ---------- */
+    migrate_tenants($db);
+}
+
+/**
+ * 给所有业务表加 tenant_id，并把会跨板块撞车的唯一键改成复合键。
+ *
+ * 为什么必须改唯一键：members.phone 原来是全局 UNIQUE，
+ * 两个板块各有一个 13800138000 的会员时第二条就插不进去。
+ */
+function migrate_tenants(PDO $db): void
+{
+    $tables = ['members', 'mentors', 'products', 'agents', 'agent_orders', 'customers',
+               'photos', 'compares', 'payments', 'appointments', 'client_steps',
+               'client_notes', 'product_claims', 'packages', 'member_packages',
+               'wallet_logs', 'recharge_cards', 'backups', 'admins'];
+
+    foreach ($tables as $t) {
+        add_column($db, $t, 'tenant_id', "INT NOT NULL DEFAULT 0 COMMENT '所属板块，0=默认板块'");
+        add_index($db, $t, 'idx_tenant', 'tenant_id');
+    }
+
+    add_column($db, 'activation_codes', 'tenant_id', "INT NULL COMMENT '已绑定的板块'");
+    add_index($db, 'activation_codes', 'idx_tenant', 'tenant_id');
+    add_column($db, 'activations', 'tenant_id', "INT NOT NULL DEFAULT 0 COMMENT '所属板块'");
+    add_index($db, 'activations', 'idx_tenant', 'tenant_id');
+
+    /* members.phone 的全局唯一改成 (tenant_id, phone) */
+    tenant_relax_unique($db, 'members', 'phone', 'uk_tenant_phone', 'tenant_id, phone');
+
+    /* 老数据全部归到默认板块，并建一条默认板块记录，后台才看得到。
+       注意：id 是 AUTO_INCREMENT，默认 sql_mode 下插 0 会被改成自增号，
+       必须临时打开 NO_AUTO_VALUE_ON_ZERO，否则默认板块变成 id=1，
+       而老数据的 tenant_id 全是 0，两边对不上，后台就看不到默认板块。 */
+    try {
+        $n = (int)$db->query("SELECT COUNT(*) FROM tenants WHERE id=0")->fetchColumn();
+        if ($n === 0) {
+            /* 先修历史脏数据：之前误插成 id>0 的那条默认板块，搬回 0 */
+            $st = $db->query("SELECT id FROM tenants WHERE phone='' AND code='' AND name='默认板块' ORDER BY id ASC LIMIT 1");
+            $orphan = $st ? $st->fetchColumn() : false;
+            if ($orphan !== false && (int)$orphan > 0) {
+                try {
+                    $db->exec("SET SESSION sql_mode=CONCAT(@@sql_mode,',NO_AUTO_VALUE_ON_ZERO')");
+                    $db->prepare('UPDATE tenants SET id=0 WHERE id=?')->execute([(int)$orphan]);
+                } catch (Throwable $e) {
+                }
+            }
+            $n = (int)$db->query("SELECT COUNT(*) FROM tenants WHERE id=0")->fetchColumn();
+        }
+        if ($n === 0) {
+            $st = $db->prepare('SELECT v FROM settings WHERE k=?');
+            $st->execute(['shop_name']);
+            $shop = (string)($st->fetchColumn() ?: '默认板块');
+            $db->exec("SET SESSION sql_mode=CONCAT(@@sql_mode,',NO_AUTO_VALUE_ON_ZERO')");
+            $db->prepare('INSERT INTO tenants(id,name,phone,shop_name,code,status,created_at) VALUES(0,?,?,?,?,?,?)')
+               ->execute(['默认板块', '', $shop, '', '正常', now()]);
+        }
+    } catch (Throwable $e) {
+    }
+}
+
+/** 把单列唯一索引换成复合唯一索引（幂等，索引名不同就重建） */
+function tenant_relax_unique(PDO $db, string $table, string $col, string $name, string $cols): void
+{
+    $st = $db->prepare('SELECT index_name, GROUP_CONCAT(column_name ORDER BY seq_in_index) cols
+                        FROM information_schema.statistics
+                        WHERE table_schema=DATABASE() AND table_name=? AND non_unique=0
+                        GROUP BY index_name');
+    $st->execute([$table]);
+    $hasComposite = false;
+    $single = [];
+    foreach ($st->fetchAll() as $r) {
+        $c = (string)$r['cols'];
+        if (strpos($c, ',') !== false) {
+            if ($c === str_replace(' ', '', $cols)) $hasComposite = true;
+        } elseif ($c === $col && $r['index_name'] !== 'PRIMARY') {
+            $single[] = (string)$r['index_name'];
+        }
+    }
+    if ($hasComposite) return;
+
+    /* 复合键要建之前先去掉单列唯一，否则插入同号会先被单列挡住 */
+    foreach ($single as $idx) {
+        try { $db->exec("ALTER TABLE `$table` DROP INDEX `$idx`"); } catch (Throwable $e) {}
+    }
+    try {
+        $db->exec("ALTER TABLE `$table` ADD UNIQUE KEY `$name` ($cols)");
+    } catch (Throwable $e) {
+        /* 老库里已有重复数据时退化成普通索引，不阻断升级 */
+        try { $db->exec("ALTER TABLE `$table` ADD INDEX `$name` ($cols)"); } catch (Throwable $e2) {}
+    }
 }
 
 function add_index(PDO $db, string $table, string $name, string $column, bool $unique = false): void
@@ -603,6 +697,38 @@ function init_schema(PDO $db): void
         KEY idx_device (device_id)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4";
 
+    /* ---------------- 板块（租户） ----------------
+       一个激活码 = 一个板块。A 激活，A 的客户/相册/步骤/产品/预约全在 A 的板块里；
+       B 再激活就再开一块，两边数据物理隔离，互不可见。
+       tenant_id = 0 是「默认板块」，改造前的老数据都归这里。 */
+    $sql[] = "CREATE TABLE IF NOT EXISTS tenants (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        name VARCHAR(60) NOT NULL COMMENT '使用者姓名',
+        phone VARCHAR(30) NOT NULL DEFAULT '' COMMENT '使用者电话',
+        shop_name VARCHAR(120) NOT NULL DEFAULT '' COMMENT '板块名，默认用姓名',
+        code VARCHAR(40) NOT NULL DEFAULT '' COMMENT '首次激活用的码',
+        status VARCHAR(20) NOT NULL DEFAULT '正常' COMMENT '正常/停用',
+        note VARCHAR(255) NULL,
+        restore_flag TINYINT NOT NULL DEFAULT 0 COMMENT '下次复核时要求 App 全量恢复',
+        restore_at DATETIME NULL COMMENT '最近一次要求恢复的时间',
+        restored_at DATETIME NULL COMMENT 'App 确认恢复完成的时间',
+        device_count INT NOT NULL DEFAULT 0,
+        last_active_at DATETIME NULL,
+        created_at DATETIME NOT NULL,
+        KEY idx_phone (phone),
+        KEY idx_code (code),
+        KEY idx_status (status)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4";
+
+    /* 板块级设置：店名、标语、前后标签、收款码、步骤模板…
+       全局设置（激活码 / 短信 / 安装包）仍留在 settings 表，不跟着板块走 */
+    $sql[] = "CREATE TABLE IF NOT EXISTS tenant_settings (
+        tenant_id INT NOT NULL,
+        k VARCHAR(60) NOT NULL,
+        v TEXT,
+        PRIMARY KEY (tenant_id, k)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4";
+
     foreach ($sql as $s) {
         $db->exec($s);
     }
@@ -641,6 +767,7 @@ function seed_data(PDO $db): void
         'license_grace_days' => '7',
         'license_contact' => '请联系门店获取激活码',
         'license_notice' => '本软件需激活后使用，激活码可向门店索取。',
+        'url_display' => 'encrypted',
     ];
     $st = $db->prepare('INSERT INTO settings(k,v) VALUES(?,?) ON DUPLICATE KEY UPDATE v=VALUES(v)');
     foreach ($settings as $k => $v) {
@@ -674,6 +801,13 @@ function seed_data(PDO $db): void
     foreach ($providers as $p) {
         $sst->execute([$p[0], $p[1], $p[2], $p[3], $now]);
     }
+
+    /* 默认板块：平台自己用，改造前的老数据都归这里 */
+    try {
+        $db->prepare('INSERT IGNORE INTO tenants(id,name,phone,shop_name,code,status,created_at) VALUES(0,?,?,?,?,?,?)')
+           ->execute(['默认板块', '', $settings['shop_name'], '', '正常', $now]);
+    } catch (Throwable $e) {
+    }
 }
 
 /** 老库升级时补充值相关默认设置 */
@@ -700,6 +834,7 @@ function seed_license(PDO $db): void
         'license_grace_days'    => '7',
         'license_contact'       => '请联系门店获取激活码',
         'license_notice'        => '本软件需激活后使用，激活码可向门店索取。',
+        'url_display'           => 'encrypted',
     ];
     $st = $db->prepare('INSERT IGNORE INTO settings(k,v) VALUES(?,?)');
     foreach ($defaults as $k => $v) $st->execute([$k, $v]);

@@ -8,11 +8,27 @@ struct ActivationView: View {
     @ObservedObject private var lic = LicenseService.shared
 
     @State private var code: String = ""
+    @State private var userName: String = ""
+    @State private var userPhone: String = ""
     @State private var showHelp = false
-    @FocusState private var focused: Bool
+    @State private var copiedQQ = false
+    @FocusState private var focused: Field?
+
+    /// 购买授权联系方式
+    static let contactQQ = "1063939991"
+
+    enum Field { case code, name, phone }
+
+    /// 本机已经绑过使用人（换手机重装 / 到期续费），就不必再填一次
+    private var knownOwner: Bool {
+        !lic.ownerName.isEmpty && !lic.ownerPhone.isEmpty
+    }
 
     private var canSubmit: Bool {
-        code.trimmingCharacters(in: .whitespacesAndNewlines).count >= 6 && !lic.busy
+        guard code.trimmingCharacters(in: .whitespacesAndNewlines).count >= 6, !lic.busy else { return false }
+        if knownOwner { return true }
+        return !userName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            && LicenseService.phoneOK(userPhone)
     }
 
     var body: some View {
@@ -45,7 +61,7 @@ struct ActivationView: View {
                         .foregroundColor(Theme.muted)
                         .padding(.top, 6)
 
-                    // 激活码输入
+                    // 激活码 + 使用人
                     VStack(spacing: 12) {
                         TextField("MYA-XXXX-XXXX-XXXX", text: $code)
                             .font(.system(size: 18, weight: .medium, design: .monospaced))
@@ -53,7 +69,7 @@ struct ActivationView: View {
                             .textInputAutocapitalization(.characters)
                             .autocorrectionDisabled()
                             .keyboardType(.asciiCapable)
-                            .focused($focused)
+                            .focused($focused, equals: .code)
                             .padding(.vertical, 16)
                             .padding(.horizontal, 14)
                             .background(Theme.card)
@@ -70,6 +86,73 @@ struct ActivationView: View {
                                 else if clean != v { code = clean }
                             }
 
+                        /* 使用人：服务端靠姓名电话给这个人开一块独立板块，
+                           他的客户、相册、步骤、产品、预约全都只在自己的板块里 */
+                        if knownOwner {
+                            HStack(spacing: 6) {
+                                Image(systemName: "person.crop.circle.badge.checkmark")
+                                    .font(.system(size: 12))
+                                    .foregroundColor(Theme.roseDeep)
+                                Text("本机已绑定：\(lic.ownerName) \(maskPhone(lic.ownerPhone))")
+                                    .font(.system(size: 12.5))
+                                    .foregroundColor(Theme.muted)
+                                Spacer()
+                            }
+                            .padding(.horizontal, 4)
+                        } else {
+                            HStack(spacing: 10) {
+                                Image(systemName: "person")
+                                    .font(.system(size: 14))
+                                    .foregroundColor(Theme.muted)
+                                    .frame(width: 18)
+                                TextField("使用人姓名", text: $userName)
+                                    .font(.system(size: 15))
+                                    .textInputAutocapitalization(.never)
+                                    .autocorrectionDisabled()
+                                    .focused($focused, equals: .name)
+                            }
+                            .padding(.vertical, 13)
+                            .padding(.horizontal, 14)
+                            .background(Theme.card)
+                            .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                                    .stroke(Theme.line, lineWidth: 1)
+                            )
+
+                            HStack(spacing: 10) {
+                                Image(systemName: "phone")
+                                    .font(.system(size: 14))
+                                    .foregroundColor(Theme.muted)
+                                    .frame(width: 18)
+                                TextField("手机号（11 位）", text: $userPhone)
+                                    .font(.system(size: 15))
+                                    .keyboardType(.numberPad)
+                                    .focused($focused, equals: .phone)
+                                    .onChange(of: userPhone) { v in
+                                        let d = v.filter { $0.isNumber }
+                                        if d.count > 11 { userPhone = String(d.prefix(11)) }
+                                        else if d != v { userPhone = d }
+                                    }
+                            }
+                            .padding(.vertical, 13)
+                            .padding(.horizontal, 14)
+                            .background(Theme.card)
+                            .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                                    .stroke(Theme.line, lineWidth: 1)
+                            )
+
+                            Text("姓名和手机号用来给你单独开一个板块，之后你的客户资料只属于你，不会和别人混在一起")
+                                .font(.system(size: 11.5))
+                                .foregroundColor(Theme.muted)
+                                .multilineTextAlignment(.leading)
+                                .fixedSize(horizontal: false, vertical: true)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .padding(.horizontal, 4)
+                        }
+
                         if let err = lic.errorText {
                             Text(err)
                                 .font(.system(size: 12.5))
@@ -79,8 +162,8 @@ struct ActivationView: View {
                         }
 
                         Button {
-                            focused = false
-                            Task { await lic.redeem(code) }
+                            focused = nil
+                            Task { await lic.redeem(code, name: userName, phone: userPhone) }
                         } label: {
                             HStack(spacing: 8) {
                                 if lic.busy { ProgressView().tint(.white) }
@@ -127,6 +210,57 @@ struct ActivationView: View {
                     .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
                     .padding(.top, 24)
 
+                    // 购买授权联系方式
+                    VStack(spacing: 10) {
+                        HStack(spacing: 6) {
+                            Image(systemName: "bubble.left.and.bubble.right.fill")
+                                .font(.system(size: 13))
+                                .foregroundColor(Theme.roseDeep)
+                            Text("购买授权请联系")
+                                .font(.system(size: 12.5))
+                                .foregroundColor(Theme.muted)
+                            Spacer()
+                        }
+
+                        HStack(spacing: 10) {
+                            Text("QQ")
+                                .font(.system(size: 11, weight: .semibold))
+                                .foregroundColor(.white)
+                                .padding(.horizontal, 7)
+                                .padding(.vertical, 3)
+                                .background(Theme.roseDeep)
+                                .clipShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
+
+                            Text(ActivationView.contactQQ)
+                                .font(.system(size: 19, weight: .semibold, design: .monospaced))
+                                .foregroundColor(Theme.ink)
+
+                            Spacer()
+
+                            Button {
+                                UIPasteboard.general.string = ActivationView.contactQQ
+                                copiedQQ = true
+                            } label: {
+                                Text(copiedQQ ? "已复制" : "复制")
+                                    .font(.system(size: 12.5, weight: .medium))
+                                    .foregroundColor(Theme.roseDeep)
+                                    .padding(.horizontal, 12)
+                                    .padding(.vertical, 6)
+                                    .background(Theme.roseLight.opacity(0.6))
+                                    .clipShape(Capsule())
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                    .padding(16)
+                    .background(Theme.card)
+                    .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 14, style: .continuous)
+                            .stroke(Theme.roseLight, lineWidth: 1)
+                    )
+                    .padding(.top, 12)
+
                     Spacer(minLength: 24)
 
                     Text("设备编号 \(lic.deviceShort)")
@@ -139,6 +273,8 @@ struct ActivationView: View {
         }
         .onAppear {
             if code.isEmpty, !lic.codeText.isEmpty { code = lic.codeText }
+            if userName.isEmpty { userName = lic.ownerName }
+            if userPhone.isEmpty { userPhone = lic.ownerPhone }
         }
         .sheet(isPresented: $showHelp) {
             helpSheet
@@ -171,6 +307,28 @@ struct ActivationView: View {
                 .background(Theme.roseLight.opacity(0.55))
                 .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
 
+            HStack(spacing: 8) {
+                Text("购买授权 QQ")
+                    .font(.system(size: 13))
+                    .foregroundColor(Theme.muted)
+                Text(ActivationView.contactQQ)
+                    .font(.system(size: 15, weight: .semibold, design: .monospaced))
+                    .foregroundColor(Theme.ink)
+                Spacer()
+                Button {
+                    UIPasteboard.general.string = ActivationView.contactQQ
+                } label: {
+                    Text("复制")
+                        .font(.system(size: 12.5))
+                        .foregroundColor(Theme.roseDeep)
+                }
+            }
+            .padding(.vertical, 10)
+            .padding(.horizontal, 14)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Theme.card)
+            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+
             Text("把这串设备编号发给门店，方便他们核对授权：\(lic.deviceShort)")
                 .font(.system(size: 12))
                 .foregroundColor(Theme.muted)
@@ -193,6 +351,14 @@ struct ActivationView: View {
         }
         .padding(20)
         .presentationDetents([.height(360)])
+    }
+}
+
+extension ActivationView {
+    /// 138****8888，激活页上只显示打码后的号码
+    func maskPhone(_ p: String) -> String {
+        guard p.count == 11 else { return p }
+        return String(p.prefix(3)) + "****" + String(p.suffix(4))
     }
 }
 

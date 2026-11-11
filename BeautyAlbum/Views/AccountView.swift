@@ -495,10 +495,12 @@ struct AccountView: View {
                         .font(.system(size: 12, weight: .semibold))
                         .foregroundColor(Theme.roseDeep)
                 }
-                Text(CloudAPI.shared.baseURL)
-                    .font(.system(size: 11.5))
+                Text(ServerURL.display(CloudAPI.shared.baseURL))
+                    .font(.system(size: 11.5, design: ServerURL.isEncrypted ? .monospaced : .default))
                     .foregroundColor(Theme.muted)
                     .lineLimit(1)
+                    .truncationMode(.middle)
+                    .textSelection(.enabled)
                 Text("账号与套餐数据保存在这地址对应的后台，换服务器后需要重新登录。")
                     .font(.system(size: 11))
                     .foregroundColor(Theme.muted)
@@ -520,6 +522,10 @@ struct AccountView: View {
 
     private func loadSiteInfo() async {
         if let info = try? await CloudAPI.shared.siteInfo() {
+            /* 网址显示方式由后台控制，取回来立刻生效 */
+            if let m = info.urlDisplay, !m.isEmpty {
+                ServerURL.displayMode = m
+            }
             await MainActor.run { rechargeNotice = info.rechargeNotice }
         }
     }
@@ -926,7 +932,7 @@ struct ServerSettingSheet: View {
         NavigationView {
             Form {
                 Section {
-                    TextField("https://meiyan.shengka.net", text: $text)
+                    TextField("https://你的域名", text: $text)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
                         .keyboardType(.URL)

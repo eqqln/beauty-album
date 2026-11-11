@@ -309,13 +309,20 @@ function sync_pull(?string $since): array
         }));
         $sel = implode(',', array_map(function ($c) { return "`$c`"; }, $cols));
 
-        $sql = "SELECT $sel FROM `$table`";
+        /* 板块隔离：这台设备只能拉到它所属板块的行 */
+        $conds = [];
         $params = [];
+        if (column_exists(db(), $table, 'tenant_id')) {
+            $conds[] = '`tenant_id` = ?';
+            $params[] = tenant_current_id();
+        }
         if ($sinceDt !== null && column_exists(db(), $table, 'updated_at')) {
-            $sql .= ' WHERE (updated_at IS NULL OR updated_at >= ?)';
+            $conds[] = '(updated_at IS NULL OR updated_at >= ?)';
             $params[] = $sinceDt;
         }
-        $sql .= ' ORDER BY id ASC LIMIT 20000';
+        $sql = "SELECT $sel FROM `$table`"
+             . ($conds ? ' WHERE ' . implode(' AND ', $conds) : '')
+             . ' ORDER BY id ASC LIMIT 20000';
         $st = db()->prepare($sql);
         $st->execute($params);
 
@@ -402,13 +409,17 @@ function sync_push(array $payload): array
             }
             $partial = !empty($ftsIn);
 
-            $st = db()->prepare("SELECT * FROM `$table` WHERE uid=? LIMIT 1");
-            $st->execute([$uid]);
+            $hasTenant = column_exists(db(), $table, 'tenant_id');
+            $tid = tenant_current_id();
+            $st = db()->prepare("SELECT * FROM `$table` WHERE uid=?"
+                                . ($hasTenant ? ' AND tenant_id=?' : '') . " LIMIT 1");
+            $st->execute($hasTenant ? [$uid, $tid] : [$uid]);
             $exist = $st->fetch();
 
             try {
                 if (!$exist) {
                     /* 新行：全量插入，field_ts 按客户端给的填 */
+                    if ($hasTenant) $row['tenant_id'] = $tid;
                     if ($hasFieldTs) {
                         $ft = [];
                         foreach ($row as $col => $v) {
@@ -446,7 +457,12 @@ function sync_push(array $payload): array
                         $vals[] = json_encode($ft, JSON_UNESCAPED_UNICODE);
                     }
                     $vals[] = $exist['id'];
-                    db()->prepare("UPDATE `$table` SET " . implode(',', $sets) . " WHERE id=?")->execute($vals);
+                    if ($hasTenant) {
+                        $vals[] = $tid;
+                        db()->prepare("UPDATE `$table` SET " . implode(',', $sets) . " WHERE id=? AND tenant_id=?")->execute($vals);
+                    } else {
+                        db()->prepare("UPDATE `$table` SET " . implode(',', $sets) . " WHERE id=?")->execute($vals);
+                    }
                     $ok++;
                     continue;
                 }
@@ -486,7 +502,12 @@ function sync_push(array $payload): array
                     $sets[] = "`field_ts`=?";
                     $vals[] = json_encode($serverFts, JSON_UNESCAPED_UNICODE);
                     $vals[] = $exist['id'];
-                    db()->prepare("UPDATE `$table` SET " . implode(',', $sets) . " WHERE id=?")->execute($vals);
+                    if ($hasTenant) {
+                        $vals[] = $tid;
+                        db()->prepare("UPDATE `$table` SET " . implode(',', $sets) . " WHERE id=? AND tenant_id=?")->execute($vals);
+                    } else {
+                        db()->prepare("UPDATE `$table` SET " . implode(',', $sets) . " WHERE id=?")->execute($vals);
+                    }
                     $ok++;
                 } else {
                     $skip++;
@@ -518,7 +539,12 @@ function sync_delete(array $payload): array
         foreach ($uids as $uid) {
             $uid = trim((string)$uid);
             if ($uid === '') continue;
-            db()->prepare("DELETE FROM `$table` WHERE uid=?")->execute([$uid]);
+            if (column_exists(db(), $table, 'tenant_id')) {
+                db()->prepare("DELETE FROM `$table` WHERE uid=? AND tenant_id=?")
+                    ->execute([$uid, tenant_current_id()]);
+            } else {
+                db()->prepare("DELETE FROM `$table` WHERE uid=?")->execute([$uid]);
+            }
             $n++;
         }
         $out[$name] = $n;
@@ -530,9 +556,17 @@ function sync_delete(array $payload): array
 function sync_stats(): array
 {
     $out = [];
+    $tid = tenant_current_id();
     foreach (sync_modules() as $name => $def) {
         try {
-            $out[$name] = (int)db()->query("SELECT COUNT(*) FROM `{$def['table']}`")->fetchColumn();
+            $t = $def['table'];
+            if (column_exists(db(), $t, 'tenant_id')) {
+                $st = db()->prepare("SELECT COUNT(*) FROM `$t` WHERE tenant_id=?");
+                $st->execute([$tid]);
+                $out[$name] = (int)$st->fetchColumn();
+            } else {
+                $out[$name] = (int)db()->query("SELECT COUNT(*) FROM `$t`")->fetchColumn();
+            }
         } catch (Throwable $e) {
             $out[$name] = 0;
         }

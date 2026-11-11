@@ -388,3 +388,107 @@ code{
 .chk-line{display:flex;gap:7px;align-items:center;font-size:13px;padding:5px 0;cursor:pointer}
 .chk-line input{accent-color:var(--rose,#d98b9a);width:15px;height:15px}
 #sfCustomBox{border-top:1px dashed var(--line,#e8e5e2);margin-top:10px;padding-top:4px}
+
+
+/* ---------------- 板块（多租户） ---------------- */
+.tenant-pick {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 6px 4px 10px;
+  background: var(--rose-light, #fdf1f3);
+  border: 1px solid var(--line, #eee3e0);
+  border-radius: 10px;
+  margin-right: 4px;
+}
+.tenant-pick-label {
+  font-size: 11.5px;
+  color: var(--muted, #9b8b88);
+  white-space: nowrap;
+}
+.tenant-pick select {
+  border: 0;
+  background: transparent;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ink, #3a2f2d);
+  padding: 4px 2px;
+  max-width: 190px;
+  outline: none;
+  cursor: pointer;
+}
+@media (max-width: 720px) {
+  .tenant-pick-label { display: none; }
+  .tenant-pick select { max-width: 116px; }
+}
+
+.tenant-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  gap: 14px;
+}
+.tenant-card {
+  border: 1px solid var(--line, #eee3e0);
+  border-radius: 14px;
+  padding: 16px;
+  background: #fff;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.tenant-card.on {
+  border-color: var(--rose, #e8a0ad);
+  box-shadow: 0 0 0 3px rgba(232, 160, 173, .16);
+}
+.tenant-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+}
+.tenant-name {
+  font-size: 15.5px;
+  font-weight: 700;
+  color: var(--ink, #3a2f2d);
+  line-height: 1.3;
+}
+.tenant-sub {
+  font-size: 11.5px;
+  color: var(--muted, #9b8b88);
+  margin-top: 2px;
+}
+.tenant-badge {
+  font-size: 10.5px;
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: var(--rose-light, #fdf1f3);
+  color: var(--rose-deep, #c9768a);
+  white-space: nowrap;
+}
+.tenant-badge.off { background: #f2f2f2; color: #888; }
+.tenant-nums {
+  display: flex;
+  gap: 0;
+  background: #fbf7f6;
+  border-radius: 10px;
+  padding: 9px 0;
+}
+.tenant-nums > div {
+  flex: 1;
+  text-align: center;
+  border-right: 1px solid #f0e6e3;
+}
+.tenant-nums > div:last-child { border-right: 0; }
+.tenant-nums b {
+  display: block;
+  font-size: 14.5px;
+  color: var(--ink, #3a2f2d);
+}
+.tenant-nums span {
+  font-size: 10.5px;
+  color: var(--muted, #9b8b88);
+}
+.tenant-acts {
+  display: flex;
+  gap: 7px;
+  flex-wrap: wrap;
+}

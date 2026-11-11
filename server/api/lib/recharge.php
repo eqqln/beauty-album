@@ -49,8 +49,17 @@ function wallet_log(int $memberId, string $kind, float $amount, int $points,
                     float $balanceAfter, int $pointsAfter,
                     ?string $ref = null, ?string $note = null): void
 {
-    db()->prepare('INSERT INTO wallet_logs(member_id,kind,amount,points,balance_after,points_after,ref,note,created_at) VALUES(?,?,?,?,?,?,?,?,?)')
-        ->execute([$memberId, $kind, $amount, $points, $balanceAfter, $pointsAfter, $ref, $note, now()]);
+    /* 流水的板块跟着会员走，不跟着当前请求走 —— 后台给别的板块调账时也不会串 */
+    $tid = 0;
+    try {
+        $st = db()->prepare('SELECT tenant_id FROM members WHERE id=?');
+        $st->execute([$memberId]);
+        $v = $st->fetchColumn();
+        if ($v !== false && $v !== null) $tid = (int)$v;
+    } catch (Throwable $e) {
+    }
+    db()->prepare('INSERT INTO wallet_logs(member_id,kind,amount,points,balance_after,points_after,ref,note,created_at,tenant_id) VALUES(?,?,?,?,?,?,?,?,?,?)')
+        ->execute([$memberId, $kind, $amount, $points, $balanceAfter, $pointsAfter, $ref, $note, now(), $tid]);
 }
 
 /** 卡的面额合计（充值金额 + 赠送金额） */

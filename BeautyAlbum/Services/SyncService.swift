@@ -355,6 +355,66 @@ final class SyncService: ObservableObject {
         await runSync(store: store, doPull: true, silent: false)
     }
 
+    // MARK: 换机恢复
+
+    /// 把云端这块板的全部资料整份恢复到本机。
+    ///
+    /// 用在两个场景：换了手机用同一张激活码重新激活；后台点了「恢复到手机」。
+    /// 做法是先拉全量，再清本地，最后合并写回 —— 顺序不能反，
+    /// 拉取失败时本地数据还在，不会出现"清空后没东西可恢复"。
+    @MainActor
+    func restoreFromServer(store: Store) async -> Bool {
+        guard let token = shopToken, !token.isEmpty else {
+            errorText = "软件还没激活，无法恢复"
+            return false
+        }
+        if running { return false }
+
+        running = true
+        errorText = nil
+        progressText = "正在读取云端资料…"
+        defer {
+            running = false
+            progressText = ""
+        }
+
+        do {
+            let raw = try await CloudAPI.shared.syncPull(since: nil, token: token)
+            let data = raw["data"] as? [String: Any] ?? [:]
+            let serverTime = (raw["server_time"] as? String).flatMap { Self.parseISO($0) } ?? Date()
+
+            /* 云端是空的就别清本地了，否则等于把手机上的资料删掉 */
+            let counts = (raw["counts"] as? [String: Any]) ?? [:]
+            let total = counts.values.reduce(0) { $0 + (($1 as? Int) ?? 0) }
+
+            if total > 0 {
+                progressText = "正在清理本机旧数据…"
+                store.replaceAll(with: StoreSnapshot(clients: []), imageResolver: { _ in nil })
+            }
+
+            progressText = "正在写入资料…"
+            suppressPushUntil = Date().addingTimeInterval(10)
+            _ = merge(data: data, store: store)
+
+            progressText = "正在下载图片…"
+            try await downloadMissingImages(store: store, token: token)
+
+            lastSyncAt = serverTime
+            UserDefaults.standard.set(serverTime.timeIntervalSince1970, forKey: kMark)
+            flushImages()
+            refreshSnapshots(store: store)
+            store.save()
+
+            lastSummary = "已从服务器恢复 \(total) 条资料"
+            await CloudAPI.shared.licenseRestoreAck(token: token)
+            LicenseService.shared.restoreNeeded = false
+            return true
+        } catch {
+            errorText = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+            return false
+        }
+    }
+
     /// 统一入口：silent = true 时不改界面的进度文字
     @MainActor
     private func runSync(store: Store, doPull: Bool, silent: Bool) async {

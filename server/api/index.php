@@ -24,6 +24,7 @@ require __DIR__ . '/lib/db.php';
 require __DIR__ . '/lib/perm.php';
 require __DIR__ . '/lib/auth.php';
 require __DIR__ . '/lib/sms.php';
+require __DIR__ . '/lib/tenant.php';
 require __DIR__ . '/lib/recharge.php';
 require __DIR__ . '/lib/license.php';
 require __DIR__ . '/lib/backup.php';
@@ -210,7 +211,13 @@ try {
                      'recharge_enabled', 'recharge_notice', 'recharge_min'];
             $out = [];
             foreach ($keys as $k) $out[$k] = setting_get($k, '');
-            $st = db()->query("SELECT COUNT(*) FROM packages WHERE status='上架'");
+            /* 网址显示方式由后台控制：encrypted 时 api_base 直接给混淆串 */
+            $out['url_display'] = url_display_mode();
+            $plainBase = (string)setting_get_global('api_base', '');
+            $out['api_base'] = $plainBase === '' ? '' : url_public($plainBase);
+            $out['api_base_enc'] = $plainBase === '' ? '' : url_encode($plainBase);
+            $st = db()->prepare("SELECT COUNT(*) FROM packages WHERE status='上架' AND tenant_id=?");
+            $st->execute([tenant_current_id()]);
             $out['package_count'] = (int)$st->fetchColumn();
             /* 是否已有管理员，注册页据此决定是否显示邀请码 */
             $out['has_admin'] = (int)db()->query('SELECT COUNT(*) FROM admins')->fetchColumn() > 0;
@@ -241,6 +248,8 @@ try {
                 'platform'      => inp_str('platform'),
                 'app_version'   => inp_str('app_version'),
                 'member_token'  => inp_str('member_token'),
+                'name'          => inp_str('name'),
+                'phone'         => inp_str('phone'),
             ]);
             ok($out, $out['permanent'] ? '激活成功 · 永久授权' : '激活成功');
         }
@@ -264,7 +273,9 @@ try {
 
         /* ---------- 套餐（公开） ---------- */
         case 'packages/list': {
-            $rows = db()->query("SELECT id,name,price,days,items,`desc`,badge,sort FROM packages WHERE status='上架' ORDER BY sort ASC, id ASC")->fetchAll();
+            $st = db()->prepare("SELECT id,name,price,days,items,`desc`,badge,sort FROM packages WHERE status='上架' AND tenant_id=? ORDER BY sort ASC, id ASC");
+            $st->execute([tenant_current_id()]);
+            $rows = $st->fetchAll();
             foreach ($rows as &$row) {
                 $row['price'] = (float)$row['price'];
                 $row['days'] = (int)$row['days'];
@@ -507,13 +518,14 @@ try {
             if (strlen($pass) < 6) fail('密码至少 6 位');
             if (!sms_verify_code($phone, $code, 'login')) fail('验证码不正确或已过期');
 
-            $st = db()->prepare('SELECT id FROM members WHERE phone=?');
-            $st->execute([$phone]);
+            $tid = tenant_current_id();
+            $st = db()->prepare('SELECT id FROM members WHERE phone=? AND tenant_id=?');
+            $st->execute([$phone, $tid]);
             if ($st->fetchColumn()) fail('该手机号已注册，请直接登录');
 
-            $st = db()->prepare('INSERT INTO members(name,phone,pass_hash,level,status,source,created_at) VALUES(?,?,?,?,?,?,?)');
+            $st = db()->prepare('INSERT INTO members(name,phone,pass_hash,level,status,source,created_at,tenant_id) VALUES(?,?,?,?,?,?,?,?)');
             $st->execute([$name !== '' ? $name : ('会员' . substr($phone, -4)), $phone,
-                          password_hash($pass, PASSWORD_DEFAULT), '普通会员', '正常', 'App', now()]);
+                          password_hash($pass, PASSWORD_DEFAULT), '普通会员', '正常', 'App', now(), $tid]);
             $id = (int)db()->lastInsertId();
             $st = db()->prepare('SELECT * FROM members WHERE id=?');
             $st->execute([$id]);
@@ -526,8 +538,8 @@ try {
             $code = inp_str('code');
             if (!phone_ok($phone)) fail('请填写正确的手机号');
 
-            $st = db()->prepare('SELECT * FROM members WHERE phone=?');
-            $st->execute([$phone]);
+            $st = db()->prepare('SELECT * FROM members WHERE phone=? AND tenant_id=?');
+            $st->execute([$phone, tenant_current_id()]);
             $m = $st->fetch();
             if (!$m) fail('该手机号还没有注册', 404);
 
@@ -546,8 +558,8 @@ try {
             $pass = (string)inp('password', '');
             if (strlen($pass) < 6) fail('密码至少 6 位');
             if (!sms_verify_code($phone, $code, 'login')) fail('验证码不正确或已过期');
-            $st = db()->prepare('SELECT id FROM members WHERE phone=?');
-            $st->execute([$phone]);
+            $st = db()->prepare('SELECT id FROM members WHERE phone=? AND tenant_id=?');
+            $st->execute([$phone, tenant_current_id()]);
             $id = $st->fetchColumn();
             if (!$id) fail('该手机号还没有注册', 404);
             db()->prepare('UPDATE members SET pass_hash=?, updated_at=? WHERE id=?')
@@ -582,8 +594,9 @@ try {
         case 'member/activate': {
             $m = member_required();
             $pid = inp_int('package_id');
-            $st = db()->prepare("SELECT * FROM packages WHERE id=? AND status='上架'");
-            $st->execute([$pid]);
+            $tid = (int)($m['tenant_id'] ?? tenant_current_id());
+            $st = db()->prepare("SELECT * FROM packages WHERE id=? AND status='上架' AND tenant_id=?");
+            $st->execute([$pid, $tid]);
             $p = $st->fetch();
             if (!$p) fail('套餐不存在或已下架');
 
@@ -594,8 +607,8 @@ try {
             }
             $expire = date('Y-m-d H:i:s', $base + $days * 86400);
 
-            db()->prepare('INSERT INTO member_packages(member_id,package_id,amount,started_at,expire_at,status,note,created_at) VALUES(?,?,?,?,?,?,?,?)')
-                ->execute([$m['id'], $pid, (float)$p['price'], now(), $expire, '生效中', 'App 内开通', now()]);
+            db()->prepare('INSERT INTO member_packages(member_id,package_id,amount,started_at,expire_at,status,note,created_at,tenant_id) VALUES(?,?,?,?,?,?,?,?,?)')
+                ->execute([$m['id'], $pid, (float)$p['price'], now(), $expire, '生效中', 'App 内开通', now(), $tid]);
             db()->prepare('UPDATE members SET package_id=?, expire_at=?, updated_at=? WHERE id=?')
                 ->execute([$pid, $expire, now(), $m['id']]);
 
@@ -634,6 +647,9 @@ try {
             $st->execute([$no]);
             $pre = $st->fetch();
             if (!$pre) fail('卡号不存在，请核对后重试');
+            if ((int)($pre['tenant_id'] ?? 0) !== (int)($m['tenant_id'] ?? 0)) {
+                fail('这张卡不属于当前门店，请核对后再试');
+            }
             if (card_secret_norm((string)$pre['card_secret']) !== $secret) fail('卡密不正确，请核对后重试');
             if ($pre['status'] === '已使用') fail('这张卡已经被使用过了（' . substr((string)$pre['used_at'], 0, 16) . '）');
             if ($pre['status'] === '已作废') fail('这张卡已作废，请联系门店');
@@ -743,7 +759,8 @@ try {
             perm_check_cap(admin_required(), 'recharge');
             card_mark_expired();
             $db = db();
-            $row = $db->query("SELECT
+            $tid = tenant_current_id();
+            $stRow = $db->prepare("SELECT
                 COUNT(*) AS total,
                 COALESCE(SUM(CASE WHEN status='未使用' THEN 1 ELSE 0 END),0) AS unused,
                 COALESCE(SUM(CASE WHEN status='已使用' THEN 1 ELSE 0 END),0) AS used,
@@ -753,11 +770,17 @@ try {
                 COALESCE(SUM(CASE WHEN status='已使用' THEN amount+bonus ELSE 0 END),0) AS used_amount,
                 COALESCE(SUM(CASE WHEN status='未使用' THEN points ELSE 0 END),0) AS unused_points,
                 COALESCE(SUM(CASE WHEN status='已使用' THEN points ELSE 0 END),0) AS used_points
-                FROM recharge_cards")->fetch() ?: [];
+                FROM recharge_cards WHERE tenant_id=?");
+            $stRow->execute([$tid]);
+            $row = $stRow->fetch() ?: [];
             $today = date('Y-m-d');
             $month = date('Y-m');
-            $f = function (string $sql) use ($db) { return (float)$db->query($sql)->fetchColumn(); };
-            $g = function (string $sql) use ($db) { return (int)$db->query($sql)->fetchColumn(); };
+            $f = function (string $sql, array $a = []) use ($db) {
+                $st = $db->prepare($sql); $st->execute($a); return (float)$st->fetchColumn();
+            };
+            $g = function (string $sql, array $a = []) use ($db) {
+                $st = $db->prepare($sql); $st->execute($a); return (int)$st->fetchColumn();
+            };
 
             ok([
                 'total' => (int)($row['total'] ?? 0),
@@ -769,11 +792,11 @@ try {
                 'used_amount' => round((float)($row['used_amount'] ?? 0), 2),
                 'unused_points' => (int)($row['unused_points'] ?? 0),
                 'used_points' => (int)($row['used_points'] ?? 0),
-                'recharge_today' => $f("SELECT COALESCE(SUM(amount),0) FROM wallet_logs WHERE kind='充值' AND created_at LIKE '$today%'"),
-                'recharge_month' => $f("SELECT COALESCE(SUM(amount),0) FROM wallet_logs WHERE kind='充值' AND created_at LIKE '$month%'"),
-                'recharge_total' => $f("SELECT COALESCE(SUM(amount),0) FROM wallet_logs WHERE kind='充值'"),
-                'recharge_count' => $g("SELECT COUNT(*) FROM wallet_logs WHERE kind='充值'"),
-                'balance_total' => $f('SELECT COALESCE(SUM(balance),0) FROM members'),
+                'recharge_today' => $f("SELECT COALESCE(SUM(amount),0) FROM wallet_logs WHERE tenant_id=? AND kind='充值' AND created_at LIKE ?", [$tid, $today . '%']),
+                'recharge_month' => $f("SELECT COALESCE(SUM(amount),0) FROM wallet_logs WHERE tenant_id=? AND kind='充值' AND created_at LIKE ?", [$tid, $month . '%']),
+                'recharge_total' => $f("SELECT COALESCE(SUM(amount),0) FROM wallet_logs WHERE tenant_id=? AND kind='充值'", [$tid]),
+                'recharge_count' => $g("SELECT COUNT(*) FROM wallet_logs WHERE tenant_id=? AND kind='充值'", [$tid]),
+                'balance_total' => $f('SELECT COALESCE(SUM(balance),0) FROM members WHERE tenant_id=?', [$tid]),
                 'settings' => [
                     'enabled' => setting_get('recharge_enabled', '1'),
                     'prefix' => setting_get('recharge_prefix', 'MY'),
@@ -809,7 +832,8 @@ try {
             if ($batch === '') $batch = 'B' . date('YmdHis');
 
             $db = db();
-            $ins = $db->prepare('INSERT INTO recharge_cards(card_no,card_secret,card_type,amount,bonus,points,days,batch,start_at,expire_at,status,note,created_by,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)');
+            $genTid = tenant_current_id();
+            $ins = $db->prepare('INSERT INTO recharge_cards(card_no,card_secret,card_type,amount,bonus,points,days,batch,start_at,expire_at,status,note,created_by,created_at,tenant_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)');
             $chk = $db->prepare('SELECT 1 FROM recharge_cards WHERE card_no=?');
             $out = [];
 
@@ -827,7 +851,7 @@ try {
                     $ins->execute([$no, $sec, $type, $amount, $bonus, $points, $days, $batch,
                                    $start !== '' ? $start : null, $expire !== '' ? $expire : null,
                                    '未使用', $note !== '' ? $note : null,
-                                   $a['email'] ?: $a['name'], now()]);
+                                   $a['email'] ?: $a['name'], now(), $genTid]);
                     $out[] = ['card_no' => $no, 'card_secret' => $sec];
                 }
                 $db->commit();
@@ -867,6 +891,8 @@ try {
             if ($status !== '') { $where[] = 'status=?'; $args[] = $status; }
             if ($batch !== '') { $where[] = 'batch=?'; $args[] = $batch; }
             if ($type !== '') { $where[] = 'card_type=?'; $args[] = $type; }
+            $where[] = 'tenant_id=?';
+            $args[] = tenant_current_id();
             $w = $where ? ' WHERE ' . implode(' AND ', $where) : '';
 
             $db = db();
@@ -885,7 +911,9 @@ try {
                 $r['label'] = card_label($r);
             }
 
-            $batches = $db->query('SELECT batch, COUNT(*) AS n, MIN(created_at) AS t FROM recharge_cards GROUP BY batch ORDER BY t DESC LIMIT 60')->fetchAll();
+            $bq = $db->prepare('SELECT batch, COUNT(*) AS n, MIN(created_at) AS t FROM recharge_cards WHERE tenant_id=? GROUP BY batch ORDER BY t DESC LIMIT 60');
+            $bq->execute([tenant_current_id()]);
+            $batches = $bq->fetchAll();
             foreach ($batches as &$b) $b['n'] = (int)$b['n'];
 
             ok(['rows' => $rows, 'total' => $total, 'page' => $page, 'size' => $size, 'batches' => $batches]);
@@ -900,6 +928,8 @@ try {
             $args = [];
             if ($status !== '') { $where[] = 'status=?'; $args[] = $status; }
             if ($batch !== '') { $where[] = 'batch=?'; $args[] = $batch; }
+            $where[] = 'tenant_id=?';
+            $args[] = tenant_current_id();
             $w = $where ? ' WHERE ' . implode(' AND ', $where) : '';
             $st = db()->prepare("SELECT card_no,card_secret,card_type,amount,bonus,points,days,batch,start_at,expire_at,status,used_name,used_at,note,created_at FROM recharge_cards$w ORDER BY id DESC LIMIT 5000");
             $st->execute($args);
@@ -918,8 +948,8 @@ try {
             $id = inp_int('id');
             $b = body();
             if ($id <= 0) fail('缺少卡 ID');
-            $st = db()->prepare('SELECT * FROM recharge_cards WHERE id=?');
-            $st->execute([$id]);
+            $st = db()->prepare('SELECT * FROM recharge_cards WHERE id=? AND tenant_id=?');
+            $st->execute([$id, tenant_current_id()]);
             $card = $st->fetch();
             if (!$card) fail('卡不存在', 404);
             if ($card['status'] === '已使用') fail('已使用的卡不能修改');
@@ -954,8 +984,8 @@ try {
         case 'admin/recharge-void': {
             perm_check_cap(admin_required(), 'recharge');
             $id = inp_int('id');
-            $st = db()->prepare('SELECT * FROM recharge_cards WHERE id=?');
-            $st->execute([$id]);
+            $st = db()->prepare('SELECT * FROM recharge_cards WHERE id=? AND tenant_id=?');
+            $st->execute([$id, tenant_current_id()]);
             $card = $st->fetch();
             if (!$card) fail('卡不存在', 404);
             if ($card['status'] === '已使用') fail('已使用的卡不能作废');
@@ -976,11 +1006,12 @@ try {
             }
             if (!$list) fail('缺少要删除的卡');
             $ph = implode(',', array_fill(0, count($list), '?'));
-            $st = db()->prepare("SELECT COUNT(*) FROM recharge_cards WHERE id IN ($ph) AND status='已使用'");
-            $st->execute($list);
+            $tid = tenant_current_id();
+            $st = db()->prepare("SELECT COUNT(*) FROM recharge_cards WHERE id IN ($ph) AND status='已使用' AND tenant_id=?");
+            $st->execute(array_merge($list, [$tid]));
             if ((int)$st->fetchColumn() > 0) fail('选中的卡里有已使用的记录，不能删除');
-            $st = db()->prepare("DELETE FROM recharge_cards WHERE id IN ($ph)");
-            $st->execute($list);
+            $st = db()->prepare("DELETE FROM recharge_cards WHERE id IN ($ph) AND tenant_id=?");
+            $st->execute(array_merge($list, [$tid]));
             ok(['deleted' => $st->rowCount()], '已删除 ' . $st->rowCount() . ' 张卡');
         }
 
@@ -1379,6 +1410,143 @@ try {
         }
 
         /* =====================================================
+           后台：板块管理
+           一个激活码 = 一个板块，每个板块的数据完全独立
+           ===================================================== */
+
+        /** 板块列表：带各板块的数据量和授权情况 */
+        case 'admin/tenant-list': {
+            perm_check_cap(admin_required(), 'license');
+            $kw = inp_str('kw');
+            $sql = 'SELECT * FROM tenants';
+            $args = [];
+            if ($kw !== '') {
+                $sql .= ' WHERE name LIKE ? OR phone LIKE ? OR shop_name LIKE ? OR code LIKE ?';
+                $args = [like($kw), like($kw), like($kw), like($kw)];
+            }
+            $sql .= ' ORDER BY id ASC';
+            $st = db()->prepare($sql);
+            $st->execute($args);
+            $rows = [];
+            foreach ($st->fetchAll() as $t) {
+                $o = tenant_out($t);
+                $o['counts'] = tenant_counts((int)$t['id']);
+                /* 该板块最近一条有效授权 */
+                $a = db()->prepare("SELECT expire_at, code, device_name FROM activations
+                                    WHERE tenant_id=? AND status='生效中' ORDER BY id DESC LIMIT 1");
+                $a->execute([(int)$t['id']]);
+                $act = $a->fetch();
+                $o['license_left'] = $act ? license_left_text($act['expire_at'] ?: null) : '未激活';
+                $o['license_code'] = $act ? license_code_pretty((string)$act['code']) : '';
+                $rows[] = $o;
+            }
+            ok(['rows' => $rows, 'current' => tenant_current_id()]);
+        }
+
+        /** 手工开一个板块（正常流程是激活时自动开，这里给平台预建用） */
+        case 'admin/tenant-create': {
+            perm_check_cap(admin_required(), 'license');
+            $name = inp_str('name');
+            $phone = inp_str('phone');
+            $shop = inp_str('shop_name');
+            if ($name === '') fail('请填写使用者姓名');
+            if ($phone !== '' && !phone_ok($phone)) fail('手机号格式不正确');
+            if ($phone !== '') {
+                $st = db()->prepare('SELECT id FROM tenants WHERE phone=? LIMIT 1');
+                $st->execute([$phone]);
+                if ($st->fetchColumn() !== false) fail('这个手机号已经有板块了，直接给他发激活码即可');
+            }
+            $t = tenant_ensure($name, $phone, '', $shop !== '' ? $shop : $name);
+            ok(tenant_out($t), '板块已创建');
+        }
+
+        /** 改板块资料 / 停用启用 */
+        case 'admin/tenant-save': {
+            perm_check_cap(admin_required(), 'license');
+            $id = inp_int('id');
+            if ($id < 0) fail('板块不存在');
+            $t = tenant_row($id);
+            if (!$t) fail('板块不存在');
+            $b = body();
+            $sets = [];
+            $args = [];
+            foreach (['name' => 'name', 'phone' => 'phone', 'shop_name' => 'shop_name',
+                      'status' => 'status', 'note' => 'note'] as $k => $col) {
+                if (array_key_exists($k, $b)) { $sets[] = "`$col`=?"; $args[] = (string)$b[$k]; }
+            }
+            if (!$sets) fail('没有需要修改的内容');
+            $args[] = $id;
+            db()->prepare('UPDATE tenants SET ' . implode(',', $sets) . ' WHERE id=?')->execute($args);
+            ok(tenant_out(tenant_row($id) ?: $t), '已保存');
+        }
+
+        /** 要求某个板块下次连接时全量恢复到手机 */
+        case 'admin/tenant-restore': {
+            $me = admin_required();
+            perm_check_cap($me, 'license');
+            $id = inp_int('id');
+            $t = tenant_row($id);
+            if (!$t) fail('板块不存在');
+            db()->prepare('UPDATE tenants SET restore_flag=1, restore_at=? WHERE id=?')
+               ->execute([now(), $id]);
+            license_log('要求恢复', null, (string)($t['code'] ?? ''), null, null, 0, 0,
+                        '板块 #' . $id . ' ' . $t['name'], (string)($me['name'] ?: $me['email']));
+            ok(null, '已标记：该板块下次激活/复核时会自动全量恢复到手机');
+        }
+
+        /** 撤销恢复要求 */
+        case 'admin/tenant-restore-cancel': {
+            perm_check_cap(admin_required(), 'license');
+            $id = inp_int('id');
+            db()->prepare('UPDATE tenants SET restore_flag=0 WHERE id=?')->execute([$id]);
+            ok(null, '已取消');
+        }
+
+        /** 删除板块：默认板块不能删，有设备的要先解绑 */
+        case 'admin/tenant-delete': {
+            perm_check_cap(admin_required(), 'license');
+            $id = inp_int('id');
+            if ($id <= 0) fail('默认板块不能删除');
+            $t = tenant_row($id);
+            if (!$t) fail('板块不存在');
+            $st = db()->prepare("SELECT COUNT(*) FROM activations WHERE tenant_id=? AND status='生效中'");
+            $st->execute([$id]);
+            if ((int)$st->fetchColumn() > 0) fail('这个板块还有授权设备，请先在激活码页解绑');
+            $tables = ['members', 'mentors', 'products', 'agents', 'agent_orders', 'customers',
+                       'photos', 'compares', 'payments', 'appointments', 'client_steps',
+                       'client_notes', 'product_claims', 'packages', 'member_packages',
+                       'wallet_logs', 'recharge_cards'];
+            foreach ($tables as $tb) {
+                try { db()->prepare("DELETE FROM `$tb` WHERE tenant_id=?")->execute([$id]); } catch (Throwable $e) {}
+            }
+            try { db()->prepare('DELETE FROM tenant_settings WHERE tenant_id=?')->execute([$id]); } catch (Throwable $e) {}
+            try { db()->prepare('UPDATE activation_codes SET tenant_id=NULL WHERE tenant_id=?')->execute([$id]); } catch (Throwable $e) {}
+            /* 已停用的设备记录一并清掉，否则留下悬空的授权行 */
+            try {
+                $st = db()->prepare('SELECT id FROM activations WHERE tenant_id=?');
+                $st->execute([$id]);
+                $aids = array_map('intval', $st->fetchAll(PDO::FETCH_COLUMN) ?: []);
+                foreach ($aids as $aid) {
+                    db()->prepare('DELETE FROM device_tokens WHERE activation_id=?')->execute([$aid]);
+                }
+                db()->prepare('DELETE FROM activations WHERE tenant_id=?')->execute([$id]);
+            } catch (Throwable $e) {}
+            db()->prepare('DELETE FROM tenants WHERE id=?')->execute([$id]);
+            ok(null, '板块已删除');
+        }
+
+        /** App 恢复完成后回报，清掉标志 */
+        case 'license/restore-ack': {
+            sync_authorize();
+            $tid = tenant_current_id();
+            if ($tid > 0) {
+                db()->prepare('UPDATE tenants SET restore_flag=0, restored_at=? WHERE id=?')
+                   ->execute([now(), $tid]);
+            }
+            ok(['tenant_id' => $tid], '已记录');
+        }
+
+        /* =====================================================
            后台：一键备份
            ===================================================== */
         case 'admin/backup-stats': {
@@ -1500,40 +1668,48 @@ try {
         case 'stats/overview': {
             admin_required();
             $db = db();
+            $tid = tenant_current_id();
             $today = date('Y-m-d');
             $month = date('Y-m');
-            $g = function (string $sql) use ($db) { return (int)$db->query($sql)->fetchColumn(); };
-            $f = function (string $sql) use ($db) { return (float)$db->query($sql)->fetchColumn(); };
+            $g = function (string $sql, array $a = []) use ($db) {
+                $st = $db->prepare($sql); $st->execute($a); return (int)$st->fetchColumn();
+            };
+            $f = function (string $sql, array $a = []) use ($db) {
+                $st = $db->prepare($sql); $st->execute($a); return (float)$st->fetchColumn();
+            };
+            $rows = function (string $sql, array $a = []) use ($db) {
+                $st = $db->prepare($sql); $st->execute($a); return $st->fetchAll();
+            };
 
+            /* 概览只统计当前板块；短信是平台级，不分板块 */
             ok([
-                'members' => $g('SELECT COUNT(*) FROM members'),
-                'members_today' => $g("SELECT COUNT(*) FROM members WHERE created_at LIKE '$today%'"),
-                'customers' => $g('SELECT COUNT(*) FROM customers'),
-                'photos' => $g('SELECT COUNT(*) FROM photos'),
-                'compares' => $g('SELECT COUNT(*) FROM compares'),
-                'mentors' => $g('SELECT COUNT(*) FROM mentors'),
-                'products' => $g('SELECT COUNT(*) FROM products'),
-                'agents' => $g('SELECT COUNT(*) FROM agents'),
-                'packages' => $g("SELECT COUNT(*) FROM packages WHERE status='上架'"),
-                'subs' => $g("SELECT COUNT(*) FROM member_packages WHERE status='生效中'"),
-                'income_month' => $f("SELECT COALESCE(SUM(amount),0) FROM payments WHERE status='已收款' AND paid_at LIKE '$month%'"),
-                'income_total' => $f("SELECT COALESCE(SUM(amount),0) FROM payments WHERE status='已收款'"),
-                'unpaid' => $f("SELECT COALESCE(SUM(amount),0) FROM payments WHERE status IN ('未收款','部分收款')"),
-                'sms_today' => $g("SELECT COUNT(*) FROM sms_logs WHERE created_at LIKE '$today%'"),
-                'cards_unused' => $g("SELECT COUNT(*) FROM recharge_cards WHERE status='未使用'"),
-                'cards_total' => $g('SELECT COUNT(*) FROM recharge_cards'),
-                'recharge_month' => $f("SELECT COALESCE(SUM(amount),0) FROM wallet_logs WHERE kind='充值' AND created_at LIKE '$month%'"),
-                'recharge_total' => $f("SELECT COALESCE(SUM(amount),0) FROM wallet_logs WHERE kind='充值'"),
-                'balance_total' => $f('SELECT COALESCE(SUM(balance),0) FROM members'),
-                'recent_recharges' => $db->query("SELECT w.id,w.amount,w.points,w.balance_after,w.ref,w.created_at,m.name AS member FROM wallet_logs w LEFT JOIN members m ON m.id=w.member_id WHERE w.kind='充值' ORDER BY w.id DESC LIMIT 6")->fetchAll(),
-                'recent_members' => $db->query('SELECT id,name,phone,level,status,created_at FROM members ORDER BY id DESC LIMIT 6')->fetchAll(),
-                'recent_payments' => $db->query('SELECT p.id,p.amount,p.method,p.status,p.paid_at,c.name AS customer FROM payments p LEFT JOIN customers c ON c.id=p.customer_id ORDER BY p.id DESC LIMIT 6')->fetchAll(),
+                'tenant_id' => $tid,
+                'tenant' => ($t = tenant_row($tid)) ? tenant_out($t) : null,
+                'members' => $g('SELECT COUNT(*) FROM members WHERE tenant_id=?', [$tid]),
+                'members_today' => $g('SELECT COUNT(*) FROM members WHERE tenant_id=? AND created_at LIKE ?', [$tid, $today . '%']),
+                'customers' => $g('SELECT COUNT(*) FROM customers WHERE tenant_id=?', [$tid]),
+                'photos' => $g('SELECT COUNT(*) FROM photos WHERE tenant_id=?', [$tid]),
+                'compares' => $g('SELECT COUNT(*) FROM compares WHERE tenant_id=?', [$tid]),
+                'mentors' => $g('SELECT COUNT(*) FROM mentors WHERE tenant_id=?', [$tid]),
+                'products' => $g('SELECT COUNT(*) FROM products WHERE tenant_id=?', [$tid]),
+                'agents' => $g('SELECT COUNT(*) FROM agents WHERE tenant_id=?', [$tid]),
+                'packages' => $g("SELECT COUNT(*) FROM packages WHERE tenant_id=? AND status='上架'", [$tid]),
+                'subs' => $g("SELECT COUNT(*) FROM member_packages WHERE tenant_id=? AND status='生效中'", [$tid]),
+                'income_month' => $f("SELECT COALESCE(SUM(amount),0) FROM payments WHERE tenant_id=? AND status='已收款' AND paid_at LIKE ?", [$tid, $month . '%']),
+                'income_total' => $f("SELECT COALESCE(SUM(amount),0) FROM payments WHERE tenant_id=? AND status='已收款'", [$tid]),
+                'unpaid' => $f("SELECT COALESCE(SUM(amount),0) FROM payments WHERE tenant_id=? AND status IN ('未收款','部分收款')", [$tid]),
+                'sms_today' => $g("SELECT COUNT(*) FROM sms_logs WHERE created_at LIKE ?", [$today . '%']),
+                'cards_unused' => $g("SELECT COUNT(*) FROM recharge_cards WHERE tenant_id=? AND status='未使用'", [$tid]),
+                'cards_total' => $g('SELECT COUNT(*) FROM recharge_cards WHERE tenant_id=?', [$tid]),
+                'recharge_month' => $f("SELECT COALESCE(SUM(amount),0) FROM wallet_logs WHERE tenant_id=? AND kind='充值' AND created_at LIKE ?", [$tid, $month . '%']),
+                'recharge_total' => $f("SELECT COALESCE(SUM(amount),0) FROM wallet_logs WHERE tenant_id=? AND kind='充值'", [$tid]),
+                'balance_total' => $f('SELECT COALESCE(SUM(balance),0) FROM members WHERE tenant_id=?', [$tid]),
+                'recent_recharges' => $rows("SELECT w.id,w.amount,w.points,w.balance_after,w.ref,w.created_at,m.name AS member FROM wallet_logs w LEFT JOIN members m ON m.id=w.member_id WHERE w.tenant_id=? AND w.kind='充值' ORDER BY w.id DESC LIMIT 6", [$tid]),
+                'recent_members' => $rows('SELECT id,name,phone,level,status,created_at FROM members WHERE tenant_id=? ORDER BY id DESC LIMIT 6', [$tid]),
+                'recent_payments' => $rows('SELECT p.id,p.amount,p.method,p.status,p.paid_at,c.name AS customer FROM payments p LEFT JOIN customers c ON c.id=p.customer_id WHERE p.tenant_id=? ORDER BY p.id DESC LIMIT 6', [$tid]),
             ]);
         }
 
-        /* =====================================================
-           App ↔ 后台 双向同步
-           ===================================================== */
         case 'sync/pull': {
             sync_authorize();
             $since = inp_str('since');
@@ -1593,8 +1769,9 @@ try {
             $def = module_def($key);
             perm_check_module($me, $key, false);
             [$page, $size, $offset] = page_params();
+            $table = $def['table'];
             $kw = inp_str('kw');
-            $where = '';
+            $conds = [];
             $args = [];
             if ($kw !== '' && $def['search']) {
                 $parts = [];
@@ -1602,17 +1779,23 @@ try {
                     $parts[] = "`$f` LIKE ?";
                     $args[] = like($kw);
                 }
-                $where = ' WHERE (' . implode(' OR ', $parts) . ')';
+                $conds[] = '(' . implode(' OR ', $parts) . ')';
             }
             // 附加筛选
             foreach (['customer_id', 'member_id', 'agent_id', 'package_id', 'phase', 'status', 'client_uid', 'agent_uid', 'teacher_uid'] as $f) {
                 $v = inp($f, null);
                 if ($v !== null && $v !== '') {
-                    $where .= ($where === '' ? ' WHERE ' : ' AND ') . "`$f` = ?";
+                    $conds[] = "`$f` = ?";
                     $args[] = $v;
                 }
             }
-            $table = $def['table'];
+            // 板块隔离：只能看到自己板块的数据
+            if (column_exists(db(), $table, 'tenant_id')) {
+                $conds[] = '`tenant_id` = ?';
+                $args[] = tenant_current_id();
+            }
+            $where = $conds ? ' WHERE ' . implode(' AND ', $conds) : '';
+
             $st = db()->prepare("SELECT COUNT(*) FROM $table$where");
             $st->execute($args);
             $total = (int)$st->fetchColumn();
@@ -1718,14 +1901,21 @@ try {
                     $args[] = $v;
                 }
                 $args[] = $id;
-                $st = db()->prepare("UPDATE {$def['table']} SET " . implode(',', $sets) . ' WHERE id=?');
+                /* 改之前先确认这条属于当前板块，别让 A 板块改到 B 板块的行 */
+                $hasTenant = column_exists(db(), $def['table'], 'tenant_id');
+                $tail = $hasTenant ? ' AND tenant_id=?' : '';
+                if ($hasTenant) $args[] = tenant_current_id();
+                $st = db()->prepare("UPDATE {$def['table']} SET " . implode(',', $sets) . ' WHERE id=?' . $tail);
                 $st->execute($args);
-                $st = db()->prepare("SELECT * FROM {$def['table']} WHERE id=?");
-                $st->execute([$id]);
+                $st = db()->prepare("SELECT * FROM {$def['table']} WHERE id=?" . $tail);
+                $st->execute($hasTenant ? [$id, tenant_current_id()] : [$id]);
                 ok($st->fetch(), '已保存');
             }
 
             $data['created_at'] = now();
+            if (column_exists(db(), $def['table'], 'tenant_id')) {
+                $data['tenant_id'] = tenant_current_id();
+            }
             if ($hasUid) $data['uid'] = sync_uuid();
             if ($hasUpd) $data['updated_at'] = now();
             if ($hasFts) $data['field_ts'] = $stampFts(array_keys($data), []);
@@ -1746,7 +1936,12 @@ try {
             perm_check_module($me, $key, true);
             $id = inp_int('id');
             if ($id <= 0) fail('缺少 id');
-            db()->prepare("DELETE FROM {$def['table']} WHERE id=?")->execute([$id]);
+            if (column_exists(db(), $def['table'], 'tenant_id')) {
+                db()->prepare("DELETE FROM {$def['table']} WHERE id=? AND tenant_id=?")
+                    ->execute([$id, tenant_current_id()]);
+            } else {
+                db()->prepare("DELETE FROM {$def['table']} WHERE id=?")->execute([$id]);
+            }
             ok(null, '已删除');
         }
 
@@ -1754,29 +1949,32 @@ try {
         case 'options': {
             admin_required();
             $type = inp_str('type');
+            $tid = tenant_current_id();
+            /* 下拉选项也要按板块过滤，否则 A 的客户名会出现在 B 的预约表单里 */
             switch ($type) {
                 case 'customers':
-                    $rows = db()->query('SELECT id, uid, name, phone FROM customers ORDER BY id DESC LIMIT 500')->fetchAll();
+                    $st = db()->prepare('SELECT id, uid, name, phone FROM customers WHERE tenant_id=? ORDER BY id DESC LIMIT 500');
                     break;
                 case 'mentors':
-                    $rows = db()->query('SELECT id, uid, name, phone FROM mentors ORDER BY sort ASC, id ASC LIMIT 500')->fetchAll();
+                    $st = db()->prepare('SELECT id, uid, name, phone FROM mentors WHERE tenant_id=? ORDER BY sort ASC, id ASC LIMIT 500');
                     break;
                 case 'products':
-                    $rows = db()->query('SELECT id, uid, name, price FROM products ORDER BY id DESC LIMIT 500')->fetchAll();
+                    $st = db()->prepare('SELECT id, uid, name, price FROM products WHERE tenant_id=? ORDER BY id DESC LIMIT 500');
                     break;
                 case 'members':
-                    $rows = db()->query('SELECT id, name, phone FROM members ORDER BY id DESC LIMIT 500')->fetchAll();
+                    $st = db()->prepare('SELECT id, name, phone FROM members WHERE tenant_id=? ORDER BY id DESC LIMIT 500');
                     break;
                 case 'packages':
-                    $rows = db()->query('SELECT id, name, price FROM packages ORDER BY sort ASC, id ASC')->fetchAll();
+                    $st = db()->prepare('SELECT id, name, price FROM packages WHERE tenant_id=? ORDER BY sort ASC, id ASC');
                     break;
                 case 'agents':
-                    $rows = db()->query('SELECT id, uid, name, level FROM agents ORDER BY id DESC LIMIT 500')->fetchAll();
+                    $st = db()->prepare('SELECT id, uid, name, level FROM agents WHERE tenant_id=? ORDER BY id DESC LIMIT 500');
                     break;
                 default:
                     fail('未知选项类型');
             }
-            ok($rows);
+            $st->execute([$tid]);
+            ok($st->fetchAll());
         }
 
         /* =====================================================
@@ -1787,6 +1985,20 @@ try {
             $rows = db()->query('SELECT k,v FROM settings')->fetchAll();
             $out = [];
             foreach ($rows as $row) $out[$row['k']] = $row['v'];
+            /* 当前板块单独设过的项覆盖上去：切板块时表单跟着变 */
+            $stid = tenant_current_id();
+            if ($stid > 0) {
+                $ts = db()->prepare('SELECT k,v FROM tenant_settings WHERE tenant_id=?');
+                $ts->execute([$stid]);
+                foreach ($ts->fetchAll() as $row) $out[$row['k']] = $row['v'];
+                $tn = tenant_row($stid);
+                if ($tn) {
+                    $out['tenant_id'] = (string)$stid;
+                    $out['tenant_name'] = (string)$tn['name'];
+                    $out['tenant_phone'] = (string)$tn['phone'];
+                    $out['tenant_shop_name'] = (string)$tn['shop_name'];
+                }
+            }
             /* App 端设置项：即使还没写过也要有默认值，后台表单才不会空着 */
             $appDefaults = [
                 'wechat_qr' => '', 'alipay_qr' => '', 'pay_link' => '', 'pay_note' => '',
@@ -1810,7 +2022,9 @@ try {
                       'recharge_enabled', 'recharge_prefix', 'recharge_default_days', 'recharge_min', 'recharge_notice',
                       /* App 端设置项，与 IPA 的 AppSettings 一一对应 */
                       'wechat_qr', 'alipay_qr', 'pay_link', 'pay_note',
-                      'step_template', 'app_features', 'home_layout', 'home_columns', 'home_limit', 'show_cover'];
+                      'step_template', 'app_features', 'home_layout', 'home_columns', 'home_limit', 'show_cover',
+                      /* 网址显示方式：encrypted / plain */
+                      'url_display'];
             foreach ($allow as $k) {
                 if (array_key_exists($k, $b)) setting_set($k, (string)$b[$k]);
             }
@@ -1930,7 +2144,9 @@ try {
                 $ext = $raw === 'qt' ? 'mov' : $raw;
             }
 
-            $sub = 'uploads/' . date('Ym');
+            /* 按板块分目录，两个板块拍到同名文件也不会互相覆盖 */
+            $tseg = tenant_upload_dir();
+            $sub = 'uploads/' . ($tseg !== '' ? $tseg . '/' : '') . date('Ym');
             $dir = dirname(__DIR__) . '/' . $sub;
             if (!is_dir($dir)) @mkdir($dir, 0755, true);
             $name = date('dHis') . '-' . bin2hex(random_bytes(4)) . '.' . $ext;

@@ -8,6 +8,7 @@ struct ShopSyncCard: View {
 
     @State private var showLogin = false
     @State private var confirmPush = false
+    @State private var confirmRestore = false
 
     private struct CountItem: Identifiable {
         let label: String
@@ -63,6 +64,32 @@ struct ShopSyncCard: View {
                     Text(license.codeText)
                         .font(.system(size: 10.5, design: .monospaced))
                         .foregroundColor(Theme.muted.opacity(0.75))
+                }
+            }
+
+            // 这块板归属谁 + 换机恢复入口
+            if !license.ownerName.isEmpty {
+                HStack(spacing: 6) {
+                    Image(systemName: "person.crop.circle")
+                        .font(.system(size: 10.5))
+                        .foregroundColor(Theme.muted)
+                    Text("资料归属：\(license.ownerName)")
+                        .font(.system(size: 11.5))
+                        .foregroundColor(Theme.muted)
+                    Spacer()
+                    Button {
+                        confirmRestore = true
+                    } label: {
+                        Text("从服务器恢复")
+                            .font(.system(size: 11.5, weight: .medium))
+                            .foregroundColor(Theme.roseDeep)
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 5)
+                            .background(Theme.roseLight.opacity(0.6))
+                            .clipShape(Capsule())
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(sync.running)
                 }
             }
 
@@ -168,6 +195,14 @@ struct ShopSyncCard: View {
         )
         .sheet(isPresented: $showLogin) {
             ShopLoginSheet()
+        }
+        .alert("从服务器恢复资料", isPresented: $confirmRestore) {
+            Button("开始恢复") {
+                Task { _ = await SyncService.shared.restoreFromServer(store: store) }
+            }
+            Button("取消", role: .cancel) {}
+        } message: {
+            Text("把服务器上属于「\(license.ownerName)」这个板块的全部资料下载到本机，并覆盖本机现有数据。换手机后用它把资料接回来。")
         }
     }
 }

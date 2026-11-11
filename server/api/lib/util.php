@@ -129,3 +129,58 @@ function tpl_render(string $tpl, array $vars): string
     }
     return $tpl;
 }
+
+/* ---------------- 服务器地址混淆 ----------------
+ * 后台「系统设置 → 网址显示方式」可以在「加密 / 明文」之间切换。
+ * 加密算法与 App 端 ServerURL.swift 必须完全一致：
+ *   逐字节 XOR 固定密钥，再标准 Base64，去掉尾部 '='。
+ * 注意：这是防止随手抄走域名的混淆，不是密码学意义上的加密。
+ */
+
+function url_codec_key(): string
+{
+    return 'MYA2026K';
+}
+
+function url_encode(string $plain): string
+{
+    if ($plain === '') return '';
+    $k = url_codec_key();
+    $n = strlen($k);
+    $o = '';
+    for ($i = 0, $len = strlen($plain); $i < $len; $i++) {
+        $o .= chr(ord($plain[$i]) ^ ord($k[$i % $n]));
+    }
+    return rtrim(base64_encode($o), '=');
+}
+
+function url_decode(string $cipher): string
+{
+    if ($cipher === '') return '';
+    $c = $cipher;
+    $pad = strlen($c) % 4;
+    if ($pad > 0) $c .= str_repeat('=', 4 - $pad);
+    $raw = base64_decode($c, true);
+    if ($raw === false) return '';
+    $k = url_codec_key();
+    $n = strlen($k);
+    $o = '';
+    for ($i = 0, $len = strlen($raw); $i < $len; $i++) {
+        $o .= chr(ord($raw[$i]) ^ ord($k[$i % $n]));
+    }
+    return $o;
+}
+
+/** 后台开关：'encrypted' 只显示混淆串，'plain' 显示明文 */
+function url_display_mode(): string
+{
+    $m = setting_get_global('url_display', 'encrypted');
+    return $m === 'plain' ? 'plain' : 'encrypted';
+}
+
+/** 按当前开关决定对外给哪个形态 */
+function url_public(string $plain): string
+{
+    if ($plain === '') return '';
+    return url_display_mode() === 'plain' ? $plain : url_encode($plain);
+}

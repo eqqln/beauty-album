@@ -35,6 +35,13 @@ final class LicenseService: ObservableObject {
     @Published var errorText: String?
     /// 服务端是否要求激活；关掉后谁都能用（老客户应急）
     @Published var required: Bool = true
+    /// 这块板归属谁
+    @Published var ownerName: String = ""
+    @Published var ownerPhone: String = ""
+    /// 服务端要求把云端资料整体恢复到本机
+    @Published var restoreNeeded: Bool = false
+    /// 正在恢复
+    @Published var restoring: Bool = false
 
     // MARK: 存储键
 
@@ -47,6 +54,8 @@ final class LicenseService: ObservableObject {
     private let kLeft   = "license.left"
     private let kGrace  = "license.grace"
     private let kShop   = "license.shop"
+    private let kOwner  = "license.owner.name"
+    private let kOwnerP = "license.owner.phone"
 
     private var bootstrapped = false
 
@@ -56,6 +65,8 @@ final class LicenseService: ObservableObject {
         permanent = UserDefaults.standard.bool(forKey: kPerm)
         leftText = UserDefaults.standard.string(forKey: kLeft) ?? ""
         shopName = UserDefaults.standard.string(forKey: kShop) ?? ""
+        ownerName = UserDefaults.standard.string(forKey: kOwner) ?? ""
+        ownerPhone = UserDefaults.standard.string(forKey: kOwnerP) ?? ""
     }
 
     // MARK: 本机标识
@@ -163,11 +174,20 @@ final class LicenseService: ObservableObject {
     // MARK: 兑换激活码
 
     @MainActor
-    func redeem(_ raw: String) async {
+    func redeem(_ raw: String, name: String = "", phone: String = "") async {
         let code = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        let who = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        let tel = phone.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !code.isEmpty else {
             errorText = "请输入激活码"
             return
+        }
+        /* 第一次激活必须报上使用人，服务端靠这个开板块；
+           已经激活过的板块（换手机重装）允许留空，服务端按码找回原板块 */
+        let known = !ownerName.isEmpty && !ownerPhone.isEmpty
+        if !known {
+            if who.isEmpty { errorText = "请填写使用人姓名"; return }
+            if !LicenseService.phoneOK(tel) { errorText = "请填写正确的手机号"; return }
         }
         busy = true
         errorText = nil
@@ -175,6 +195,8 @@ final class LicenseService: ObservableObject {
 
         do {
             let r = try await CloudAPI.shared.licenseRedeem(code: code,
+                                                            name: who,
+                                                            phone: tel,
                                                             deviceID: deviceID,
                                                             deviceName: deviceName,
                                                             platform: platform,
@@ -196,6 +218,9 @@ final class LicenseService: ObservableObject {
             leftText = r.leftText ?? ""
             if let s = r.notice, !s.isEmpty { notice = s }
             if let s = r.contact, !s.isEmpty { contact = s }
+            if let n = r.ownerName, !n.isEmpty { ownerName = n; d.set(n, forKey: kOwner) }
+            if let p = r.ownerPhone, !p.isEmpty { ownerPhone = p; d.set(p, forKey: kOwnerP) }
+            restoreNeeded = (r.restore ?? false)
 
             // 设备凭证直接接管同步：激活完就开始自动同步，不用再登录一次
             if let token = r.syncToken, !token.isEmpty {
@@ -236,6 +261,17 @@ final class LicenseService: ObservableObject {
         if let s = r.notice, !s.isEmpty { notice = s }
         if let s = r.contact, !s.isEmpty { contact = s }
         if let s = r.shopName, !s.isEmpty { shopName = s; d.set(s, forKey: kShop) }
+        if let n = r.ownerName, !n.isEmpty { ownerName = n; d.set(n, forKey: kOwner) }
+        if let p = r.ownerPhone, !p.isEmpty { ownerPhone = p; d.set(p, forKey: kOwnerP) }
+        if let b = r.restore, b { restoreNeeded = true }
+    }
+
+    /// 手机号：11 位、1 开头、第二位 3-9
+    static func phoneOK(_ p: String) -> Bool {
+        let s = p.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard s.count == 11, s.first == "1" else { return false }
+        guard let c = s.dropFirst().first, c >= "3", c <= "9" else { return false }
+        return s.allSatisfy { $0.isNumber }
     }
 
     /// 本地判断是否已过期（含宽限期）。永久授权或没写到期时间视为不过期
