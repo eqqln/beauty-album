@@ -205,6 +205,22 @@ final class SyncService: ObservableObject {
         lastSummary = nil
     }
 
+    /// 激活成功后接管同步：服务端签发的设备凭证直接当店铺 token 用，
+    /// 之后所有资料自动推拉，用户不需要再手动登录一次。
+    @MainActor
+    func adopt(token: String, name: String) {
+        guard !token.isEmpty else { return }
+        let changed = (shopToken != token)
+        shopToken = token
+        if !name.isEmpty { shopName = name }
+        UserDefaults.standard.set(token, forKey: kToken)
+        if !shopName.isEmpty { UserDefaults.standard.set(shopName, forKey: kName) }
+        errorText = nil
+        if changed, let s = boundStore {
+            Task { await runSync(store: s, doPull: true, silent: true) }
+        }
+    }
+
     // MARK: 自动同步（核心）
 
     private var bag = Set<AnyCancellable>()

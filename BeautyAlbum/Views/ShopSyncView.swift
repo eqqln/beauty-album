@@ -4,6 +4,7 @@ import SwiftUI
 struct ShopSyncCard: View {
     @ObservedObject var sync = SyncService.shared
     @ObservedObject var store = Store.shared
+    @ObservedObject var license = LicenseService.shared
 
     @State private var showLogin = false
     @State private var confirmPush = false
@@ -46,6 +47,24 @@ struct ShopSyncCard: View {
                     Text(sync.shopName)
                         .font(.system(size: 11.5))
                         .foregroundColor(Theme.muted)
+                }
+            }
+
+            // 授权状态：激活码决定这台机器能用多久
+            HStack(spacing: 6) {
+                Image(systemName: "key.fill")
+                    .font(.system(size: 10.5))
+                    .foregroundColor(Theme.roseDeep)
+                Text(license.permanent
+                     ? "软件已永久授权"
+                     : (license.leftText.isEmpty ? "软件授权校验中" : "软件授权：\(license.leftText)"))
+                    .font(.system(size: 11.5))
+                    .foregroundColor(Theme.muted)
+                Spacer()
+                if !license.codeText.isEmpty {
+                    Text(license.codeText)
+                        .font(.system(size: 10.5, design: .monospaced))
+                        .foregroundColor(Theme.muted.opacity(0.75))
                 }
             }
 

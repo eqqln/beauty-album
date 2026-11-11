@@ -3,13 +3,18 @@ import SwiftUI
 struct RootView: View {
     @EnvironmentObject var store: Store
     @Environment(\.scenePhase) private var scenePhase
+    @ObservedObject private var license = LicenseService.shared
 
     @State private var backgroundedAt: Date?
     @State private var tab: Int = 0
 
     var body: some View {
         Group {
-            if store.settings.lockEnabled && !store.isUnlocked {
+            if license.state == .checking {
+                ActivationCheckingView()
+            } else if license.state == .inactive {
+                ActivationView()
+            } else if store.settings.lockEnabled && !store.isUnlocked {
                 LockScreen()
             } else {
                 mainTabs
@@ -17,8 +22,18 @@ struct RootView: View {
         }
         .onAppear {
             store.runAutoBackupIfNeeded()
-            // 启动即挂上自动同步：本地改动自动推、定时自动拉
-            SyncService.shared.activate(store: store)
+            // 先校验授权，通过后才挂上自动同步
+            Task {
+                await license.bootstrap()
+                if license.state == .active {
+                    await SyncService.shared.activate(store: store)
+                }
+            }
+        }
+        .onChange(of: license.state) { s in
+            if s == .active {
+                Task { await SyncService.shared.activate(store: store) }
+            }
         }
         .onChange(of: scenePhase) { phase in
             switch phase {
@@ -34,8 +49,13 @@ struct RootView: View {
                 backgroundedAt = nil
                 // 回到前台顺手检查一次自动备份是否到期
                 store.runAutoBackupIfNeeded()
-                // 回前台立刻拉一次云端改动
-                SyncService.shared.pullIfActive(store: store)
+                // 回前台复核授权，再立刻拉一次云端改动
+                Task {
+                    await license.verifyQuietly()
+                    if license.state == .active {
+                        SyncService.shared.pullIfActive(store: store)
+                    }
+                }
             default:
                 break
             }

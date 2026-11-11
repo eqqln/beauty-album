@@ -31,6 +31,7 @@
     { key: 'recharge', title: '充值卡', icon: '💳', cap: 'recharge', sub: '批量生成卡号卡密，App 内直接充值' },
     { key: 'm:wallet', title: '钱包流水', icon: '📒', sub: '充值、消费、调整的完整流水' },
     { group: '系统' },
+    { key: 'license', title: '激活码', icon: '🔑', cap: 'license', sub: '软件授权、设备管理、充能续期' },
     { key: 'staff', title: '员工管理', icon: '🧑‍💼', cap: 'staff', sub: '加员工、设岗位、分权限' },
     { key: 'sms', title: '短信', icon: '✉️', cap: 'sms', sub: '多家短信通道与发送记录' },
     { key: 'backup', title: '数据备份', icon: '💾', cap: 'backup', sub: '一键导出全部数据与图片' },
@@ -323,6 +324,7 @@
     if (nav.key === 'sms') return renderSms(view);
     if (nav.key === 'settings') return renderSettings(view);
     if (nav.key === 'staff') return renderStaff(view);
+    if (nav.key === 'license') return renderLicense(view);
     if (nav.key.indexOf('m:') === 0) return CRUD.render(view, nav.key.slice(2));
   }
 
@@ -1507,6 +1509,504 @@
     }
   }
 
+  /* ---------------- 软件激活码 ---------------- */
+
+  var LC = { page: 1, size: 20, kw: '', status: '', kind: '' };
+
+  var LC_KINDS = ['试用码', '正式码', '续期码', '演示码', '内部码'];
+  var LC_UNITS = ['小时', '天', '周', '月', '季', '年', '永久'];
+
+  function lcBadge(s) {
+    var cls = 'gray';
+    if (s === '生效中' || s === '已激活') cls = 'ok';
+    else if (s === '已停用') cls = 'bad';
+    else if (s === '已过期') cls = 'warn';
+    else if (s === '未激活') cls = 'info';
+    return '<span class="badge ' + cls + '">' + UI.esc(s) + '</span>';
+  }
+
+  /** 通用 CSV 导出（带 BOM，Excel 打开不乱码） */
+  function csvOut(name, head, keys, rows) {
+    var lines = [head.join(',')];
+    rows.forEach(function (r) {
+      lines.push(keys.map(function (k) {
+        var v = r[k] === null || r[k] === undefined ? '' : String(r[k]);
+        return '"' + v.replace(/"/g, '""') + '"';
+      }).join(','));
+    });
+    var blob = new Blob(['\ufeff' + lines.join('\r\n')], { type: 'text/csv;charset=utf-8' });
+    var a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = name;
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(function () { URL.revokeObjectURL(a.href); a.remove(); }, 1200);
+  }
+
+  async function renderLicense(view) {
+    view.innerHTML = UI.loading();
+    try {
+      var s = await API.get('admin/license-stats');
+      var def = s.settings || {};
+
+      var cards = [
+        { k: '激活码总数', v: UI.num(s.codes_total),
+          d: '未激活 ' + UI.num(s.codes_unused) + ' · 已激活 ' + UI.num(s.codes_active), cls: 'rose' },
+        { k: '生效设备', v: UI.num(s.devices),
+          d: '7 天内到期 ' + UI.num(s.expiring) + ' 台', cls: s.expiring > 0 ? 'bad' : 'ok' },
+        { k: '累计充能', v: UI.num(Math.round((s.boost_minutes || 0) / 1440)) + ' 天',
+          d: '所有设备累加' },
+        { k: '随卡充值', v: UI.money(s.credit_total || 0), d: '已发放到会员钱包', cls: 'ok' }
+      ];
+      var html = '<div class="grid g4">' + cards.map(function (c) {
+        return '<div class="card stat"><div class="k">' + c.k + '</div>' +
+          '<div class="v ' + (c.cls || '') + '">' + c.v + '</div>' +
+          '<div class="d">' + UI.esc(c.d) + '</div></div>';
+      }).join('') + '</div>';
+
+      /* 生成 */
+      html += '<div class="card" style="margin:16px 0">' +
+        '<div class="rc-head"><strong>生成激活码</strong>' +
+          '<span class="td-sub">装完 App 第一次打开必须输入，没激活进不了主界面；一张码可按设备数授权多台</span>' +
+          (def.enabled === '1' ? '' : '<span class="badge bad">激活闸门已关闭</span>') +
+        '</div>' +
+        '<div class="rc-grid">' +
+          '<label class="field"><span>种类</span><select id="lcKind">' +
+            LC_KINDS.map(function (k) { return '<option value="' + k + '">' + k + '</option>'; }).join('') +
+          '</select></label>' +
+          '<label class="field"><span>授权时长</span><div class="row-inline">' +
+            '<input type="number" id="lcDurVal" value="1" min="0" step="1" inputmode="numeric" style="width:88px">' +
+            '<select id="lcDurUnit">' + LC_UNITS.map(function (u) {
+              return '<option value="' + u + '"' + (u === '年' ? ' selected' : '') + '>' + u + '</option>';
+            }).join('') + '</select></div></label>' +
+          '<label class="field"><span>每张可激活设备数</span><input type="number" id="lcDevices" value="1" min="1" max="100" step="1" inputmode="numeric"></label>' +
+          '<label class="field"><span>生成数量</span><input type="number" id="lcCount" value="10" min="1" max="500" step="1" inputmode="numeric"></label>' +
+          '<label class="field"><span>随卡充值（元）</span><input type="number" id="lcAmount" value="0" min="0" step="1" inputmode="decimal"></label>' +
+          '<label class="field"><span>随卡赠送（元）</span><input type="number" id="lcBonus" value="0" min="0" step="1" inputmode="decimal"></label>' +
+          '<label class="field"><span>随卡积分</span><input type="number" id="lcPoints" value="0" min="0" step="1" inputmode="numeric"></label>' +
+          '<label class="field"><span>码前缀</span><input type="text" id="lcPrefix" value="' + UI.esc(def.prefix || 'MYA') + '" maxlength="6" placeholder="MYA"></label>' +
+          '<label class="field"><span>生效日期</span><input type="date" id="lcStart"></label>' +
+          '<label class="field"><span>码有效期至</span><input type="date" id="lcExpire" value="' + rcAddDays(Number(def.default_days || 365)) + '"></label>' +
+          '<label class="field"><span>批次</span><input type="text" id="lcBatch" placeholder="留空自动用时间戳"></label>' +
+          '<label class="field"><span>备注</span><input type="text" id="lcNote" placeholder="如：2026 春季开店铺货（App 端可见提示）"></label>' +
+        '</div>' +
+        '<div class="rc-presets">' +
+          '<span class="td-sub">常用时长：</span>' +
+          [['1', '小时'], ['1', '天'], ['7', '天'], ['1', '月'], ['3', '月'], ['1', '年'], ['0', '永久']].map(function (p, i) {
+            return '<button type="button" class="chip-btn" data-lcdur="' + p[0] + '|' + p[1] + '">' +
+              (p[1] === '永久' ? '永久' : p[0] + p[1]) + '</button>';
+          }).join('') +
+          '<span class="td-sub" style="margin-left:16px">随卡：</span>' +
+          [0, 100, 200, 500, 1000].map(function (v) {
+            return '<button type="button" class="chip-btn" data-lcamt="' + v + '">' + (v === 0 ? '不充值' : '¥' + v) + '</button>';
+          }).join('') +
+        '</div>' +
+        '<div class="rc-foot">' +
+          '<span class="td-sub" id="lcPreview">—</span><div style="flex:1"></div>' +
+          '<button class="btn ghost" id="lcExport">导出全部 CSV</button>' +
+          '<button class="btn primary" id="lcGen">立即生成</button>' +
+        '</div>' +
+      '</div>';
+
+      /* 授权设置 */
+      html += '<div class="card" style="margin-bottom:16px">' +
+        '<div class="rc-head"><strong>授权设置</strong>' +
+          '<span class="td-sub">关闭后 App 不再要求激活（老客户应急用，正常保持开启）</span></div>' +
+        '<div class="rc-grid">' +
+          '<label class="field"><span>激活闸门</span><select id="lcEnabled">' +
+            '<option value="1"' + (def.enabled === '1' ? ' selected' : '') + '>开启（必须激活）</option>' +
+            '<option value="0"' + (def.enabled !== '1' ? ' selected' : '') + '>关闭（谁都能用）</option>' +
+          '</select></label>' +
+          '<label class="field"><span>默认有效期（天）</span><input type="number" id="lcDefaultDays" value="' + Number(def.default_days || 365) + '" min="0" max="3650" step="1"></label>' +
+          '<label class="field"><span>到期宽限（天）</span><input type="number" id="lcGrace" value="' + Number(def.grace_days || 7) + '" min="0" max="365" step="1"></label>' +
+          '<label class="field"><span>联系门店文案</span><input type="text" id="lcContact" value="' + UI.esc(def.contact || '') + '" placeholder="请联系门店获取激活码"></label>' +
+          '<label class="field" style="grid-column:1/-1"><span>App 激活页提示</span><input type="text" id="lcNotice" value="' + UI.esc(def.notice || '') + '" placeholder="本软件需激活后使用，激活码可向门店索取。"></label>' +
+        '</div>' +
+        '<div class="rc-foot"><div style="flex:1"></div>' +
+          '<button class="btn primary" id="lcSaveSettings">保存设置</button></div>' +
+      '</div>';
+
+      /* 列表 */
+      html += '<div class="toolbar">' +
+        '<input class="search" id="lcKw" placeholder="搜激活码 / 备注">' +
+        '<select id="lcStatusSel" class="rc-select">' +
+          ['', '未激活', '已激活', '已停用', '已过期'].map(function (v) {
+            return '<option value="' + v + '">' + (v === '' ? '全部状态' : v) + '</option>';
+          }).join('') + '</select>' +
+        '<select id="lcKindSel" class="rc-select">' +
+          [''].concat(LC_KINDS).map(function (v) {
+            return '<option value="' + v + '">' + (v === '' ? '全部种类' : v) + '</option>';
+          }).join('') + '</select>' +
+        '<div style="flex:1"></div><span class="td-sub" id="lcTotal"></span>' +
+      '</div>' +
+      '<div class="card" style="padding:0;overflow:hidden"><div id="lcTable">' + UI.loading() + '</div></div>' +
+      '<div id="lcPager" class="rc-pager"></div>' +
+      '<div id="lcLogs" style="margin-top:18px"></div>';
+
+      view.innerHTML = html;
+      bindLicense(view);
+      await loadLicenseCodes(view);
+    } catch (e) {
+      view.innerHTML = UI.empty(e.message, '⚠️');
+    }
+  }
+
+  function bindLicense(view) {
+    var $v = function (id) { return view.querySelector('#' + id); };
+
+    function preview() {
+      var val = Number($v('lcDurVal').value) || 0;
+      var unit = $v('lcDurUnit').value;
+      var cnt = Number($v('lcCount').value) || 0;
+      var dev = Number($v('lcDevices').value) || 1;
+      var amt = Number($v('lcAmount').value) || 0;
+      var bonus = Number($v('lcBonus').value) || 0;
+      var pts = Number($v('lcPoints').value) || 0;
+      var parts = ['每张 ' + (unit === '永久' ? '永久' : val + unit), dev + ' 台设备'];
+      if (amt + bonus > 0) parts.push('随卡 ' + UI.money(amt + bonus));
+      if (pts > 0) parts.push('送 ' + pts + ' 积分');
+      $v('lcPreview').textContent = '将生成 ' + cnt + ' 张 · ' + parts.join(' · ');
+    }
+
+    ['lcDurVal', 'lcDurUnit', 'lcCount', 'lcDevices', 'lcAmount', 'lcBonus', 'lcPoints']
+      .forEach(function (id) { $v(id).addEventListener('input', preview); });
+    $v('lcDurUnit').addEventListener('change', preview);
+    preview();
+
+    view.querySelectorAll('[data-lcdur]').forEach(function (b) {
+      b.onclick = function () {
+        var p = b.getAttribute('data-lcdur').split('|');
+        $v('lcDurVal').value = p[0];
+        $v('lcDurUnit').value = p[1];
+        if (p[1] === '永久') $v('lcDurVal').value = 0;
+        preview();
+      };
+    });
+    view.querySelectorAll('[data-lcamt]').forEach(function (b) {
+      b.onclick = function () { $v('lcAmount').value = b.getAttribute('data-lcamt'); preview(); };
+    });
+
+    $v('lcGen').onclick = async function () {
+      var unit = $v('lcDurUnit').value;
+      var body = {
+        kind: $v('lcKind').value,
+        duration_value: unit === '永久' ? 0 : (Number($v('lcDurVal').value) || 0),
+        duration_unit: unit,
+        max_devices: Number($v('lcDevices').value) || 1,
+        count: Number($v('lcCount').value) || 1,
+        amount: Number($v('lcAmount').value) || 0,
+        bonus: Number($v('lcBonus').value) || 0,
+        points: Number($v('lcPoints').value) || 0,
+        prefix: $v('lcPrefix').value.trim() || 'MYA',
+        start_at: $v('lcStart').value,
+        expire_at: $v('lcExpire').value,
+        batch: $v('lcBatch').value.trim(),
+        note: $v('lcNote').value.trim()
+      };
+      if (unit !== '永久' && body.duration_value <= 0) {
+        UI.toast('授权时长要大于 0，永久码请把单位选成「永久」', 'bad');
+        return;
+      }
+      if (body.count > 500) { UI.toast('一次最多生成 500 张', 'bad'); return; }
+      if (body.start_at && body.expire_at && body.start_at > body.expire_at) {
+        UI.toast('生效日期不能晚于有效期', 'bad');
+        return;
+      }
+      $v('lcGen').disabled = true;
+      try {
+        var res = await API.post('admin/license-generate', body);
+        UI.toast('已生成 ' + res.count + ' 张，批次 ' + res.batch, 'ok');
+        showLicenseCodes(res, body);
+        LC.page = 1;
+        await renderLicense(view);
+      } catch (e) {
+        UI.toast(e.message, 'bad');
+        $v('lcGen').disabled = false;
+      }
+    };
+
+    $v('lcExport').onclick = async function () {
+      try {
+        var res = await API.get('admin/license-export');
+        var rows = res.rows || [];
+        if (!rows.length) { UI.toast('还没有激活码', 'bad'); return; }
+        csvOut('激活码-' + rcDate(new Date()) + '.csv',
+          ['激活码', '种类', '授权时长', '设备上限', '已激活', '随卡金额', '赠送', '积分', '生效日期', '有效期至', '状态', '批次', '备注', '生成时间'],
+          ['code_pretty', 'kind', 'duration_text', 'max_devices', 'used_count', 'amount', 'bonus', 'points', 'start_at', 'expire_at', 'status', 'batch', 'note', 'created_at'],
+          rows);
+        UI.toast('已导出 ' + rows.length + ' 张', 'ok');
+      } catch (e) { UI.toast(e.message, 'bad'); }
+    };
+
+    $v('lcSaveSettings').onclick = async function () {
+      var b = $v('lcSaveSettings');
+      b.disabled = true;
+      try {
+        await API.post('admin/license-settings', {
+          license_enabled: $v('lcEnabled').value,
+          license_default_days: Number($v('lcDefaultDays').value) || 0,
+          license_grace_days: Number($v('lcGrace').value) || 0,
+          license_contact: $v('lcContact').value.trim(),
+          license_notice: $v('lcNotice').value.trim(),
+          license_prefix: $v('lcPrefix').value.trim() || 'MYA'
+        });
+        UI.toast('授权设置已保存', 'ok');
+      } catch (e) { UI.toast(e.message, 'bad'); }
+      b.disabled = false;
+    };
+
+    var kw = $v('lcKw');
+    var timer = null;
+    kw.oninput = function () {
+      clearTimeout(timer);
+      timer = setTimeout(function () { LC.kw = kw.value.trim(); LC.page = 1; loadLicenseCodes(view); }, 320);
+    };
+    $v('lcStatusSel').onchange = function () { LC.status = this.value; LC.page = 1; loadLicenseCodes(view); };
+    $v('lcKindSel').onchange = function () { LC.kind = this.value; LC.page = 1; loadLicenseCodes(view); };
+  }
+
+  async function loadLicenseCodes(view) {
+    var wrap = view.querySelector('#lcTable');
+    var pager = view.querySelector('#lcPager');
+    var totalEl = view.querySelector('#lcTotal');
+    if (!wrap) return;
+    wrap.innerHTML = UI.loading();
+    pager.innerHTML = '';
+    try {
+      var res = await API.get('admin/license-list', {
+        page: LC.page, size: LC.size, kw: LC.kw, status: LC.status, kind: LC.kind
+      });
+      var rows = res.rows || [];
+      if (totalEl) totalEl.textContent = '共 ' + UI.num(res.total) + ' 张';
+
+      if (!rows.length) {
+        wrap.innerHTML = UI.empty(LC.kw || LC.status || LC.kind ? '没有匹配的激活码' : '还没有激活码，在上面生成一批吧', '🔑');
+        return;
+      }
+
+      var body = rows.map(function (r) {
+        var used = '<span class="td-main">' + r.used_count + ' / ' + r.max_devices + '</span>';
+        var money = (r.amount || r.bonus || r.points)
+          ? UI.money((r.amount || 0) + (r.bonus || 0)) + (r.points ? '<div class="td-sub">' + r.points + ' 积分</div>' : '')
+          : '<span class="td-sub">—</span>';
+        var valid = (r.start_at || r.expire_at)
+          ? UI.esc((r.start_at || '不限') + ' ~ ' + (r.expire_at || '长期'))
+          : '<span class="td-sub">长期有效</span>';
+        var acts = '<button class="btn sm ghost" data-lcdev="' + r.id + '">设备</button> ';
+        if (r.used_count > 0) {
+          acts += '<button class="btn sm ghost" data-lcboost="' + r.id + '">充能</button> ';
+        }
+        acts += '<button class="btn sm ghost" data-lcvoid="' + r.id + '" data-void="' + (r.status === '已停用' ? 0 : 1) + '">' +
+                (r.status === '已停用' ? '恢复' : '停用') + '</button> ';
+        acts += '<button class="btn sm danger" data-lcdel="' + r.id + '">删除</button>';
+        return '<tr>' +
+          '<td><div class="mono td-main">' + UI.esc(r.code_pretty) + '</div>' +
+            '<div class="td-sub">' + UI.esc(r.batch || '—') + (r.note ? ' · ' + UI.esc(r.note) : '') + '</div></td>' +
+          '<td>' + UI.badge(r.kind) + '</td>' +
+          '<td class="td-main">' + (r.permanent ? '永久' : UI.esc(r.duration_text)) + '</td>' +
+          '<td>' + used + '</td>' +
+          '<td>' + money + '</td>' +
+          '<td class="td-sub">' + valid + '</td>' +
+          '<td>' + lcBadge(r.status) + '</td>' +
+          '<td class="td-actions">' + acts + '</td>' +
+        '</tr>';
+      }).join('');
+
+      wrap.innerHTML = '<div style="overflow-x:auto"><table><thead><tr>' +
+        '<th>激活码 / 批次</th><th>种类</th><th>授权时长</th><th>设备</th><th>随卡充值</th>' +
+        '<th>码有效期</th><th>状态</th><th></th></tr></thead><tbody>' + body + '</tbody></table></div>';
+
+      var pages = Math.max(1, Math.ceil((res.total || 0) / LC.size));
+      pager.innerHTML = '<span class="td-sub">第 ' + LC.page + ' / ' + pages + ' 页</span>' +
+        (LC.page > 1 ? '<button class="btn sm ghost" id="lcPrev">上一页</button>' : '') +
+        (LC.page < pages ? '<button class="btn sm ghost" id="lcNext">下一页</button>' : '');
+      var prev = pager.querySelector('#lcPrev');
+      var next = pager.querySelector('#lcNext');
+      if (prev) prev.onclick = function () { LC.page--; loadLicenseCodes(view); };
+      if (next) next.onclick = function () { LC.page++; loadLicenseCodes(view); };
+
+      wrap.querySelectorAll('[data-lcdev]').forEach(function (b) {
+        b.onclick = function () { showDevices(Number(b.getAttribute('data-lcdev'))); };
+      });
+      wrap.querySelectorAll('[data-lcboost]').forEach(function (b) {
+        b.onclick = function () {
+          var id = Number(b.getAttribute('data-lcboost'));
+          var row = rows.find(function (x) { return Number(x.id) === id; });
+          boostDialog(id, row);
+        };
+      });
+      wrap.querySelectorAll('[data-lcvoid]').forEach(function (b) {
+        b.onclick = function () {
+          var id = Number(b.getAttribute('data-lcvoid'));
+          var toVoid = b.getAttribute('data-void') === '1';
+          if (!toVoid) {
+            API.post('admin/license-void', { id: id, void: 0 }).then(function () {
+              UI.toast('已恢复', 'ok');
+              loadLicenseCodes(view);
+            }).catch(function (e) { UI.toast(e.message, 'bad'); });
+            return;
+          }
+          UI.confirm('停用激活码',
+            '停用后这张码下的所有设备立刻无法使用 App，已激活的资料还在服务器上，恢复后可以继续用。确定停用？',
+            function () {
+              API.post('admin/license-void', { id: id, void: 1 }).then(function () {
+                UI.toast('已停用', 'ok');
+                loadLicenseCodes(view);
+              }).catch(function (e) { UI.toast(e.message, 'bad'); });
+            }, true);
+        };
+      });
+      wrap.querySelectorAll('[data-lcdel]').forEach(function (b) {
+        b.onclick = function () {
+          var id = Number(b.getAttribute('data-lcdel'));
+          UI.confirm('删除激活码', '删除后这张码和它的设备记录一起消失，且无法恢复。确定删除？', function () {
+            API.post('admin/license-delete', { id: id }).then(function () {
+              UI.toast('已删除', 'ok');
+              loadLicenseCodes(view);
+            }).catch(function (e) { UI.toast(e.message, 'bad'); });
+          }, true);
+        };
+      });
+    } catch (e) {
+      wrap.innerHTML = UI.empty(e.message, '⚠️');
+    }
+  }
+
+  /** 生成结果：列出明文码，支持一键复制全部 */
+  function showLicenseCodes(res, body) {
+    var rows = res.rows || [];
+    var all = rows.map(function (r) { return r.code; }).join('\n');
+    var html = '<p class="td-sub" style="margin:0 0 10px">批次 ' + UI.esc(res.batch) + ' · ' +
+      UI.esc(body.kind) + ' · ' + (body.duration_unit === '永久' ? '永久' : body.duration_value + body.duration_unit) +
+      ' · ' + body.max_devices + ' 台/张 · 共 ' + rows.length + ' 张。这些码只在这里显示一次，请先导出或复制保存。</p>' +
+      '<div style="max-height:340px;overflow:auto;border:1px solid #eee;border-radius:10px;padding:10px 12px;background:#fcfafb">' +
+      rows.map(function (r) { return '<div class="mono" style="padding:3px 0">' + UI.esc(r.code) + '</div>'; }).join('') +
+      '</div>';
+    UI.modal({
+      title: '已生成 ' + rows.length + ' 张激活码',
+      body: html,
+      buttons: [
+        { label: '复制全部', kind: 'ghost', onClick: function (m) {
+            copyText(all).then(function () { UI.toast('已复制 ' + rows.length + ' 张码', 'ok'); m.close(); })
+              .catch(function () { UI.toast('复制失败，请手动选中', 'bad'); });
+          } },
+        { label: '关闭', kind: 'primary' }
+      ]
+    });
+  }
+
+  /** 设备明细 */
+  async function showDevices(codeId) {
+    var m = UI.modal({ title: '设备授权', body: UI.loading(), wide: true });
+    try {
+      var res = await API.get('admin/license-devices', codeId > 0 ? { code_id: codeId } : {});
+      var rows = res.rows || [];
+      if (!rows.length) {
+        m.body.innerHTML = UI.empty('这张码还没有设备激活', '📱');
+        return;
+      }
+      m.body.innerHTML = '<div style="overflow-x:auto"><table><thead><tr>' +
+        '<th>设备</th><th>激活码</th><th>版本</th><th>激活时间</th><th>剩余</th><th>最近在线</th><th>状态</th><th></th>' +
+        '</tr></thead><tbody>' + rows.map(function (d) {
+          return '<tr>' +
+            '<td><div class="td-main mono">' + UI.esc(d.device_short) + '</div>' +
+              '<div class="td-sub">' + UI.esc(d.device_name || '未命名设备') + ' · ' + UI.esc(d.platform || 'iOS') + '</div></td>' +
+            '<td class="mono td-sub">' + UI.esc(d.code_pretty) + '</td>' +
+            '<td class="td-sub">' + UI.esc(d.app_version || '—') + '</td>' +
+            '<td class="td-sub">' + UI.fmtDate(d.activated_at) + '</td>' +
+            '<td class="td-main">' + UI.esc(d.left_text) + '</td>' +
+            '<td class="td-sub">' + UI.fmtDate(d.last_seen_at) + '</td>' +
+            '<td>' + lcBadge(d.status) + '</td>' +
+            '<td class="td-actions"><button class="btn sm ghost" data-dvoid="' + d.id + '" data-void="' +
+              (d.status === '已停用' ? 0 : 1) + '">' + (d.status === '已停用' ? '恢复' : '停用') + '</button></td>' +
+          '</tr>';
+        }).join('') + '</tbody></table></div>';
+
+      m.body.querySelectorAll('[data-dvoid]').forEach(function (b) {
+        b.onclick = async function () {
+          try {
+            await API.post('admin/license-device-void', {
+              id: Number(b.getAttribute('data-dvoid')),
+              void: Number(b.getAttribute('data-void'))
+            });
+            UI.toast('已更新', 'ok');
+            m.close();
+            showDevices(codeId);
+          } catch (e) { UI.toast(e.message, 'bad'); }
+        };
+      });
+    } catch (e) {
+      m.body.innerHTML = UI.empty(e.message, '⚠️');
+    }
+  }
+
+  /** 充能：给单台设备或整张码下的所有设备延长授权 */
+  function boostDialog(codeId, row) {
+    var html = '<div class="rc-grid" style="grid-template-columns:1fr 1fr">' +
+      '<label class="field"><span>延长天数</span><input type="number" id="lcBoostDays" value="30" min="1" max="3650" step="1"></label>' +
+      '<label class="field"><span>作用范围</span><select id="lcBoostTarget">' +
+        '<option value="code">这张码下所有设备（' + (row ? row.used_count : 0) + ' 台）</option>' +
+        '<option value="device">只给单台设备（下一屏选）</option>' +
+      '</select></label>' +
+      '<label class="field" style="grid-column:1/-1"><span>备注</span><input type="text" id="lcBoostNote" placeholder="如：客户续费一年"></label>' +
+      '</div>' +
+      '<p class="td-sub" style="margin:10px 0 0">已在有效期内的设备从原到期时间往后顺延；永久授权的设备不受影响。</p>';
+    var m = UI.modal({
+      title: '充能续期 · ' + (row ? row.code_pretty : ''),
+      body: html,
+      buttons: [
+        { label: '取消', kind: 'ghost' },
+        { label: '确定充能', kind: 'primary', onClick: async function () {
+            var target = m.body.querySelector('#lcBoostTarget').value;
+            var days = Number(m.body.querySelector('#lcBoostDays').value) || 0;
+            var note = m.body.querySelector('#lcBoostNote').value.trim();
+            if (days <= 0) { UI.toast('天数要大于 0', 'bad'); return; }
+            if (target === 'device') { m.close(); boostSingleDevice(codeId, days, note); return; }
+            try {
+              var r = await API.post('admin/license-boost', { id: codeId, target: 'code', days: days, note: note });
+              UI.toast('已为 ' + r.updated + ' 台设备充能 +' + days + ' 天', 'ok');
+              m.close();
+              var v = document.querySelector('#view');
+              if (v) loadLicenseCodes(v);
+            } catch (e) { UI.toast(e.message, 'bad'); }
+          } }
+      ]
+    });
+  }
+
+  /** 只给一台设备充能：先拉设备列表让用户选 */
+  async function boostSingleDevice(codeId, days, note) {
+    var m = UI.modal({ title: '选择要充能的设备', body: UI.loading(), wide: true });
+    try {
+      var res = await API.get('admin/license-devices', { code_id: codeId });
+      var rows = res.rows || [];
+      if (!rows.length) { m.body.innerHTML = UI.empty('这张码还没有设备', '📱'); return; }
+      m.body.innerHTML = '<div style="overflow-x:auto"><table><thead><tr>' +
+        '<th>设备</th><th>激活时间</th><th>剩余</th><th>状态</th><th></th></tr></thead><tbody>' +
+        rows.map(function (d) {
+          return '<tr><td><div class="td-main mono">' + UI.esc(d.device_short) + '</div>' +
+            '<div class="td-sub">' + UI.esc(d.device_name || '未命名') + '</div></td>' +
+            '<td class="td-sub">' + UI.fmtDate(d.activated_at) + '</td>' +
+            '<td class="td-main">' + UI.esc(d.left_text) + '</td>' +
+            '<td>' + lcBadge(d.status) + '</td>' +
+            '<td class="td-actions"><button class="btn sm primary" data-dboost="' + d.id + '">充能 +' + days + ' 天</button></td></tr>';
+        }).join('') + '</tbody></table></div>';
+      m.body.querySelectorAll('[data-dboost]').forEach(function (b) {
+        b.onclick = async function () {
+          try {
+            var r = await API.post('admin/license-boost', {
+              id: Number(b.getAttribute('data-dboost')), target: 'device', days: days, note: note
+            });
+            UI.toast('已充能至 ' + (r.expire_at || '永久'), 'ok');
+            m.close();
+            var v = document.querySelector('#view');
+            if (v) loadLicenseCodes(v);
+          } catch (e) { UI.toast(e.message, 'bad'); }
+        };
+      });
+    } catch (e) { m.body.innerHTML = UI.empty(e.message, '⚠️'); }
+  }
+
   /* ---------------- 员工管理 ---------------- */
 
   var ROLE_CACHE = null;
@@ -1518,7 +2018,8 @@
   };
   var CAP_LABEL = {
     write: '允许修改数据', staff: '员工管理', settings: '系统设置',
-    backup: '数据备份', sms: '短信通道', recharge: '充值卡', sync: 'App 同步'
+    backup: '数据备份', sms: '短信通道', recharge: '充值卡',
+    license: '激活码授权', sync: 'App 同步'
   };
 
   async function loadRoles() {

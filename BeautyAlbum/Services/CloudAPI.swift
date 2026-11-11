@@ -183,6 +183,89 @@ struct CloudAuthResult: Codable {
     var member: CloudMember
 }
 
+// MARK: - 软件激活
+
+struct CloudLicenseConfig: Codable {
+    var required: Bool?
+    var notice: String?
+    var contact: String?
+    var graceDays: Int?
+    var serverTime: String?
+
+    enum CodingKeys: String, CodingKey {
+        case required, notice, contact
+        case graceDays = "grace_days"
+        case serverTime = "server_time"
+    }
+}
+
+struct CloudLicenseRecharge: Codable {
+    var claimed: Bool?
+    var amount: Double?
+    var points: Int?
+    var balance: Double?
+    var reason: String?
+}
+
+struct CloudLicenseRedeem: Codable {
+    var licenseKey: String?
+    var syncToken: String?
+    var deviceID: String?
+    var code: String?
+    var kind: String?
+    var durationText: String?
+    var expireAt: String?
+    var permanent: Bool?
+    var leftText: String?
+    var secondsLeft: Int?
+    var graceDays: Int?
+    var notice: String?
+    var contact: String?
+    var shopName: String?
+    var recharge: CloudLicenseRecharge?
+
+    enum CodingKeys: String, CodingKey {
+        case code, kind, permanent, notice, contact, recharge
+        case licenseKey = "license_key"
+        case syncToken = "sync_token"
+        case deviceID = "device_id"
+        case durationText = "duration_text"
+        case expireAt = "expire_at"
+        case leftText = "left_text"
+        case secondsLeft = "seconds_left"
+        case graceDays = "grace_days"
+        case shopName = "shop_name"
+    }
+}
+
+struct CloudLicenseVerify: Codable {
+    var active: Bool?
+    var code: String?
+    var expireAt: String?
+    var permanent: Bool?
+    var leftText: String?
+    var secondsLeft: Int?
+    var syncToken: String?
+    var graceDays: Int?
+    var deviceName: String?
+    var serverTime: String?
+    var notice: String?
+    var contact: String?
+    var shopName: String?
+
+    enum CodingKeys: String, CodingKey {
+        case active, code, permanent, notice, contact
+        case expireAt = "expire_at"
+        case leftText = "left_text"
+        case secondsLeft = "seconds_left"
+        case syncToken = "sync_token"
+        case graceDays = "grace_days"
+        case deviceName = "device_name"
+        case serverTime = "server_time"
+        case shopName = "shop_name"
+    }
+}
+
 // MARK: - 云接口客户端
 
 enum CloudError: LocalizedError {
@@ -345,6 +428,34 @@ final class CloudAPI {
 
     func logout(token: String) async {
         try? await callVoid("member/logout", token: token)
+    }
+
+    // MARK: 软件激活
+
+    /// 公开配置：决定要不要弹激活页
+    func licenseConfig() async throws -> CloudLicenseConfig {
+        try await call("license/config", as: CloudLicenseConfig.self)
+    }
+
+    /// 兑换激活码：拿到本机授权凭证 + 设备同步凭证
+    func licenseRedeem(code: String, deviceID: String, deviceName: String,
+                       platform: String, appVersion: String) async throws -> CloudLicenseRedeem {
+        try await call("license/redeem", method: "POST",
+                       body: ["code": code,
+                              "device_id": deviceID,
+                              "device_name": deviceName,
+                              "platform": platform,
+                              "app_version": appVersion],
+                       as: CloudLicenseRedeem.self)
+    }
+
+    /// 启动 / 回前台复核授权
+    func licenseVerify(deviceID: String, licenseKey: String, appVersion: String) async throws -> CloudLicenseVerify {
+        try await call("license/verify", method: "POST",
+                       body: ["device_id": deviceID,
+                              "license_key": licenseKey,
+                              "app_version": appVersion],
+                       as: CloudLicenseVerify.self)
     }
 
     // MARK: 全店同步（店铺账号）

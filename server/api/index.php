@@ -25,6 +25,7 @@ require __DIR__ . '/lib/perm.php';
 require __DIR__ . '/lib/auth.php';
 require __DIR__ . '/lib/sms.php';
 require __DIR__ . '/lib/recharge.php';
+require __DIR__ . '/lib/license.php';
 require __DIR__ . '/lib/backup.php';
 require __DIR__ . '/lib/ipa.php';
 require __DIR__ . '/lib/sync.php';
@@ -223,6 +224,42 @@ try {
             $out['manifest_url'] = $ipa['manifest_url'];
             $out['install_url'] = $ipa['install_url'];
             ok($out);
+        }
+
+        /* =====================================================
+           软件激活码：App 端（公开，安装后必须激活）
+           ===================================================== */
+        case 'license/config': {
+            ok(license_config());
+        }
+
+        case 'license/redeem': {
+            $out = license_redeem([
+                'code'          => inp_str('code'),
+                'device_id'     => inp_str('device_id'),
+                'device_name'   => inp_str('device_name'),
+                'platform'      => inp_str('platform'),
+                'app_version'   => inp_str('app_version'),
+                'member_token'  => inp_str('member_token'),
+            ]);
+            ok($out, $out['permanent'] ? '激活成功 · 永久授权' : '激活成功');
+        }
+
+        case 'license/verify': {
+            ok(license_verify([
+                'device_id'    => inp_str('device_id'),
+                'license_key'  => inp_str('license_key'),
+                'app_version'  => inp_str('app_version'),
+            ]));
+        }
+
+        case 'license/claim': {
+            $out = license_claim([
+                'license_key'  => inp_str('license_key'),
+                'device_id'    => inp_str('device_id'),
+                'member_token' => inp_str('member_token'),
+            ]);
+            ok($out, $out['credit']['claimed'] ? '随卡充值已到账' : $out['credit']['reason']);
         }
 
         /* ---------- 套餐（公开） ---------- */
@@ -1019,6 +1056,329 @@ try {
         }
 
         /* =====================================================
+           后台：软件激活码 / 设备授权 / 充能
+           ===================================================== */
+        case 'admin/license-stats': {
+            perm_check_cap(admin_required(), 'license');
+            license_mark_expired();
+            $db = db();
+            $q  = function (string $sql) use ($db) { return (int)$db->query($sql)->fetchColumn(); };
+            ok([
+                'codes_total'  => $q('SELECT COUNT(*) FROM activation_codes'),
+                'codes_unused' => $q("SELECT COUNT(*) FROM activation_codes WHERE status='未激活'"),
+                'codes_active' => $q("SELECT COUNT(*) FROM activation_codes WHERE status='已激活'"),
+                'codes_void'   => $q("SELECT COUNT(*) FROM activation_codes WHERE status='已停用'"),
+                'devices'      => $q("SELECT COUNT(*) FROM activations WHERE status='生效中'"),
+                'expiring'     => $q("SELECT COUNT(*) FROM activations WHERE status='生效中' AND expire_at IS NOT NULL AND expire_at < DATE_ADD(NOW(), INTERVAL 7 DAY)"),
+                'boost_minutes' => (int)$db->query("SELECT COALESCE(SUM(minutes),0) FROM activation_logs WHERE action='充能'")->fetchColumn(),
+                'credit_total' => (float)$db->query("SELECT COALESCE(SUM(amount),0) FROM activation_logs WHERE action='充值'")->fetchColumn(),
+                'settings'     => [
+                    'enabled'      => license_setting('license_enabled', '1'),
+                    'prefix'       => license_setting('license_prefix', 'MYA'),
+                    'default_days' => license_setting('license_default_days', '365'),
+                    'grace_days'   => license_setting('license_grace_days', '7'),
+                    'contact'      => license_setting('license_contact', ''),
+                    'notice'       => license_setting('license_notice', ''),
+                ],
+            ]);
+        }
+
+        case 'admin/license-settings': {
+            $a = admin_required();
+            perm_check_cap($a, 'license');
+            $b = body();
+            $allowed = ['license_enabled', 'license_prefix', 'license_default_days',
+                        'license_grace_days', 'license_contact', 'license_notice'];
+            foreach ($allowed as $k) {
+                if (!array_key_exists($k, $b)) continue;
+                $v = trim((string)(is_array($b[$k]) ? '' : $b[$k]));
+                if ($k === 'license_enabled') $v = ($v === '1' || $v === 'on' || $v === 'true') ? '1' : '0';
+                if ($k === 'license_prefix') $v = strtoupper(preg_replace('/[^A-Za-z0-9]/', '', $v) ?: 'MYA');
+                if (in_array($k, ['license_default_days', 'license_grace_days'], true)) {
+                    $v = (string)max(0, min(3650, (int)$v));
+                }
+                setting_set($k, $v);
+            }
+            ok(license_config(), '授权设置已保存');
+        }
+
+        case 'admin/license-generate': {
+            $a = admin_required();
+            perm_check_cap($a, 'license');
+            $count      = min(500, max(1, inp_int('count', 1)));
+            $durValue   = max(0, inp_int('duration_value', 1));
+            $durUnit    = inp_str('duration_unit', '年');
+            $minutes    = license_minutes($durValue, $durUnit);
+            $kind       = inp_str('kind', '正式码');
+            if (!in_array($kind, ['试用码', '正式码', '续期码', '演示码', '内部码'], true)) {
+                fail('激活码种类不对');
+            }
+            $maxDevices = min(100, max(1, inp_int('max_devices', 1)));
+            $amount     = max(0, round(inp_float('amount', 0), 2));
+            $bonus      = max(0, round(inp_float('bonus', 0), 2));
+            $points     = max(0, inp_int('points', 0));
+            $startAt    = inp_str('start_at');
+            $expireAt   = inp_str('expire_at');
+            $batch      = inp_str('batch') ?: date('YmdHis');
+            $note       = inp_str('note');
+            $prefix     = strtoupper(inp_str('prefix') ?: license_setting('license_prefix', 'MYA'));
+
+            foreach (['start_at' => $startAt, 'expire_at' => $expireAt] as $k => $v) {
+                if ($v !== '' && !preg_match('/^\d{4}-\d{2}-\d{2}$/', $v)) fail($k . ' 日期格式不对');
+            }
+            if ($startAt !== '' && $expireAt !== '' && $expireAt < $startAt) fail('有效期结束不能早于开始');
+            if ($expireAt !== '' && $expireAt < date('Y-m-d')) fail('有效期结束不能早于今天');
+
+            $db  = db();
+            $now = now();
+            $ins = $db->prepare('INSERT INTO activation_codes(code,batch,kind,duration_value,duration_unit,duration_minutes,max_devices,amount,bonus,points,start_at,expire_at,status,note,created_by,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)');
+            $rows = [];
+            for ($i = 0; $i < $count; $i++) {
+                $code = '';
+                for ($try = 0; $try < 12; $try++) {
+                    $candidate = license_code_new($prefix);
+                    $st = $db->prepare('SELECT COUNT(*) FROM activation_codes WHERE code=?');
+                    $st->execute([$candidate]);
+                    if ((int)$st->fetchColumn() === 0) { $code = $candidate; break; }
+                }
+                if ($code === '') fail('激活码生成冲突，请重试');
+                $ins->execute([$code, $batch, $kind, $durValue, $durUnit, $minutes,
+                               $maxDevices, $amount, $bonus, $points,
+                               $startAt ?: null, $expireAt ?: null, '未激活', $note,
+                               $a['email'] ?: $a['name'], $now]);
+                $id = (int)$db->lastInsertId();
+                license_log('生成', $id, $code, null, null, $minutes, $amount + $bonus,
+                            '批次 ' . $batch . ' · ' . $kind . ' · ' .
+                            license_duration_text($durValue, $durUnit) . ' · ' . $maxDevices . ' 台',
+                            (string)($a['email'] ?: ''));
+                $rows[] = [
+                    'id' => $id, 'code' => license_code_pretty($code), 'code_raw' => $code,
+                    'kind' => $kind, 'duration_value' => $durValue, 'duration_unit' => $durUnit,
+                    'duration_text' => license_duration_text($durValue, $durUnit),
+                    'duration_minutes' => $minutes, 'max_devices' => $maxDevices,
+                    'amount' => $amount, 'bonus' => $bonus, 'points' => $points,
+                    'start_at' => $startAt, 'expire_at' => $expireAt,
+                ];
+            }
+            ok(['rows' => $rows, 'count' => count($rows), 'batch' => $batch], '已生成 ' . count($rows) . ' 张激活码');
+        }
+
+        case 'admin/license-list': {
+            perm_check_cap(admin_required(), 'license');
+            license_mark_expired();
+            [$page, $size, $offset] = page_params();
+            $status = inp_str('status');
+            $batch  = inp_str('batch');
+            $kind   = inp_str('kind');
+            $kw     = inp_str('kw');
+            $where  = [];
+            $args   = [];
+            if ($status !== '') { $where[] = 'status=?'; $args[] = $status; }
+            if ($batch  !== '') { $where[] = 'batch=?';  $args[] = $batch; }
+            if ($kind   !== '') { $where[] = 'kind=?';   $args[] = $kind; }
+            if ($kw     !== '') { $where[] = '(code LIKE ? OR note LIKE ?)'; $args[] = like($kw); $args[] = like($kw); }
+            $w = $where ? 'WHERE ' . implode(' AND ', $where) : '';
+
+            $db = db();
+            $st = $db->prepare("SELECT COUNT(*) FROM activation_codes $w");
+            $st->execute($args);
+            $total = (int)$st->fetchColumn();
+            $st = $db->prepare("SELECT * FROM activation_codes $w ORDER BY id DESC LIMIT $size OFFSET $offset");
+            $st->execute($args);
+            $rows = array_map('license_code_out', $st->fetchAll());
+            ok(['rows' => $rows, 'total' => $total, 'page' => $page, 'size' => $size]);
+        }
+
+        case 'admin/license-devices': {
+            perm_check_cap(admin_required(), 'license');
+            license_mark_expired();
+            $codeId = inp_int('code_id');
+            $db = db();
+            if ($codeId > 0) {
+                $st = $db->prepare('SELECT * FROM activations WHERE code_id=? ORDER BY id DESC LIMIT 200');
+                $st->execute([$codeId]);
+            } else {
+                $st = $db->query('SELECT * FROM activations ORDER BY id DESC LIMIT 200');
+            }
+            ok(['rows' => array_map('license_device_out', $st->fetchAll())]);
+        }
+
+        case 'admin/license-logs': {
+            perm_check_cap(admin_required(), 'license');
+            $db = db();
+            $st = $db->query('SELECT * FROM activation_logs ORDER BY id DESC LIMIT 200');
+            $rows = $st->fetchAll();
+            foreach ($rows as &$l) {
+                $l['id'] = (int)$l['id'];
+                $l['minutes'] = (int)$l['minutes'];
+                $l['amount'] = (float)$l['amount'];
+                $l['code_pretty'] = license_code_pretty((string)$l['code']);
+                $l['minutes_text'] = $l['minutes'] > 0
+                    ? ($l['minutes'] >= 1440 ? round($l['minutes'] / 1440, 1) . ' 天' : $l['minutes'] . ' 分钟')
+                    : '';
+            }
+            ok(['rows' => $rows]);
+        }
+
+        case 'admin/license-save': {
+            $a = admin_required();
+            perm_check_cap($a, 'license');
+            $id = inp_int('id');
+            if ($id <= 0) fail('缺少激活码 ID');
+            $st = db()->prepare('SELECT * FROM activation_codes WHERE id=?');
+            $st->execute([$id]);
+            if (!$st->fetch()) fail('激活码不存在');
+
+            $b = body();
+            $sets = [];
+            $args = [];
+            if (array_key_exists('note', $b))        { $sets[] = 'note=?';        $args[] = inp_str('note'); }
+            if (array_key_exists('max_devices', $b)) { $sets[] = 'max_devices=?'; $args[] = min(100, max(1, inp_int('max_devices', 1))); }
+            if (array_key_exists('expire_at', $b))   { $sets[] = 'expire_at=?';   $args[] = inp_str('expire_at') ?: null; }
+            /* 授权时长按「数值 + 单位」存，分钟数由服务端重算，避免前后端各算一遍 */
+            if (array_key_exists('duration_value', $b) || array_key_exists('duration_unit', $b)) {
+                $st = db()->prepare('SELECT duration_value,duration_unit FROM activation_codes WHERE id=?');
+                $st->execute([$id]);
+                $cur = $st->fetch() ?: ['duration_value' => 1, 'duration_unit' => '年'];
+                $dv  = array_key_exists('duration_value', $b)
+                    ? max(0, min(100000, inp_int('duration_value', 1))) : (int)$cur['duration_value'];
+                $du  = array_key_exists('duration_unit', $b)
+                    ? inp_str('duration_unit', '年') : (string)$cur['duration_unit'];
+                $sets[] = 'duration_value=?';   $args[] = $dv;
+                $sets[] = 'duration_unit=?';    $args[] = $du;
+                $sets[] = 'duration_minutes=?'; $args[] = license_minutes($dv, $du);
+            }
+            if (!$sets) fail('没有要修改的内容');
+            $args[] = $id;
+            db()->prepare('UPDATE activation_codes SET ' . implode(',', $sets) . ' WHERE id=?')->execute($args);
+            license_log('编辑', $id, '', null, null, 0, 0, '后台修改激活码参数', (string)($a['email'] ?: ''));
+            ok(null, '已保存');
+        }
+
+        case 'admin/license-void': {
+            $a = admin_required();
+            perm_check_cap($a, 'license');
+            $id   = inp_int('id');
+            $void = inp_int('void', 1) === 1;
+            $db   = db();
+            $st = $db->prepare('SELECT * FROM activation_codes WHERE id=?');
+            $st->execute([$id]);
+            $c = $st->fetch();
+            if (!$c) fail('激活码不存在');
+
+            $db->beginTransaction();
+            try {
+                if ($void) {
+                    $db->prepare("UPDATE activation_codes SET status='已停用' WHERE id=?")->execute([$id]);
+                    $db->prepare("UPDATE activations SET status='已停用' WHERE code_id=? AND status<>'已解绑'")->execute([$id]);
+                } else {
+                    $db->prepare("UPDATE activation_codes SET status=IF(used_count>0,'已激活','未激活') WHERE id=?")->execute([$id]);
+                    $db->prepare("UPDATE activations SET status='生效中' WHERE code_id=? AND status='已停用' AND (expire_at IS NULL OR expire_at>?)")
+                        ->execute([$id, now()]);
+                }
+                license_log($void ? '停用' : '恢复', $id, (string)$c['code'], null, null, 0, 0,
+                            $void ? '停用激活码及其所有设备' : '恢复激活码', (string)($a['email'] ?: ''));
+                $db->commit();
+            } catch (Throwable $e) {
+                if ($db->inTransaction()) $db->rollBack();
+                fail($e->getMessage());
+            }
+            ok(null, $void ? '已停用，相关设备立即无法使用' : '已恢复');
+        }
+
+        case 'admin/license-device-void': {
+            $a = admin_required();
+            perm_check_cap($a, 'license');
+            $id   = inp_int('id');
+            $void = inp_int('void', 1) === 1;
+            $db   = db();
+            $st = $db->prepare('SELECT * FROM activations WHERE id=?');
+            $st->execute([$id]);
+            $d = $st->fetch();
+            if (!$d) fail('设备记录不存在');
+            $db->prepare('UPDATE activations SET status=? WHERE id=?')
+                ->execute([$void ? '已停用' : '生效中', $id]);
+            license_log($void ? '停用' : '恢复', (int)$d['code_id'], (string)$d['code'], $id,
+                        (string)$d['device_id'], 0, 0, $void ? '停用单台设备' : '恢复单台设备',
+                        (string)($a['email'] ?: ''));
+            ok(null, $void ? '该设备已停用' : '该设备已恢复');
+        }
+
+        /** 充能：延长授权天数，可对单台设备，也可对整张码下的所有设备 */
+        case 'admin/license-boost': {
+            $a = admin_required();
+            perm_check_cap($a, 'license');
+            $days   = min(3650, max(1, inp_int('days', 30)));
+            $target = inp_str('target', 'device');
+            $id     = inp_int('id');
+            if ($id <= 0) fail('请选择要充能的设备或激活码');
+            $note   = inp_str('note') ?: '后台充能';
+
+            $db = db();
+            $db->beginTransaction();
+            try {
+                if ($target === 'code') {
+                    $st = $db->prepare('SELECT * FROM activation_codes WHERE id=? FOR UPDATE');
+                    $st->execute([$id]);
+                    if (!$st->fetch()) throw new RuntimeException('激活码不存在');
+                    $st = $db->prepare("SELECT * FROM activations WHERE code_id=? AND status<>'已解绑' FOR UPDATE");
+                    $st->execute([$id]);
+                } else {
+                    $st = $db->prepare('SELECT * FROM activations WHERE id=? FOR UPDATE');
+                    $st->execute([$id]);
+                }
+                $list = $st->fetchAll();
+                if (!$list) throw new RuntimeException($target === 'code' ? '这张码还没有激活任何设备' : '设备记录不存在');
+
+                $n = 0;
+                $lastExpire = '';
+                foreach ($list as $d) {
+                    if ($d['expire_at'] === null) {
+                        // 永久授权不需要顺延
+                        $newExpire = null;
+                    } else {
+                        $newExpire = license_expire_from($days, $d['expire_at']);
+                    }
+                    $db->prepare("UPDATE activations SET expire_at=?, status='生效中' WHERE id=?")
+                        ->execute([$newExpire, (int)$d['id']]);
+                    license_log('充能', (int)$d['code_id'], (string)$d['code'], (int)$d['id'],
+                                (string)$d['device_id'], $days * 1440, 0, $note, (string)($a['email'] ?: ''));
+                    $lastExpire = $newExpire ?: '永久';
+                    $n++;
+                }
+                $db->commit();
+            } catch (Throwable $e) {
+                if ($db->inTransaction()) $db->rollBack();
+                fail($e->getMessage());
+            }
+            ok(['updated' => $n, 'days' => $days, 'expire_at' => $lastExpire],
+               '已为 ' . $n . ' 台设备充能 +' . $days . ' 天');
+        }
+
+        case 'admin/license-delete': {
+            $a = admin_required();
+            perm_check_cap($a, 'license');
+            $id = inp_int('id');
+            $db = db();
+            $st = $db->prepare('SELECT * FROM activation_codes WHERE id=?');
+            $st->execute([$id]);
+            $c = $st->fetch();
+            if (!$c) fail('激活码不存在');
+            $db->prepare('DELETE FROM activations WHERE code_id=?')->execute([$id]);
+            $db->prepare('DELETE FROM activation_codes WHERE id=?')->execute([$id]);
+            license_log('删除', $id, (string)$c['code'], null, null, 0, 0,
+                        '删除激活码及其设备记录', (string)($a['email'] ?: ''));
+            ok(null, '已删除');
+        }
+
+        case 'admin/license-export': {
+            perm_check_cap(admin_required(), 'license');
+            license_mark_expired();
+            $st = db()->query('SELECT * FROM activation_codes ORDER BY id DESC LIMIT 5000');
+            ok(['rows' => array_map('license_code_out', $st->fetchAll())]);
+        }
+
+        /* =====================================================
            后台：一键备份
            ===================================================== */
         case 'admin/backup-stats': {
@@ -1175,13 +1535,13 @@ try {
            App ↔ 后台 双向同步
            ===================================================== */
         case 'sync/pull': {
-            perm_check_cap(admin_required(), 'sync');
+            sync_authorize();
             $since = inp_str('since');
             ok(sync_pull($since !== '' ? $since : null));
         }
 
         case 'sync/push': {
-            perm_check_cap(admin_required(), 'sync');
+            sync_authorize();
             $b = body();
             $payload = $b['data'] ?? $b;
             if (!is_array($payload)) fail('数据格式不对');
@@ -1189,7 +1549,7 @@ try {
         }
 
         case 'sync/delete': {
-            perm_check_cap(admin_required(), 'sync');
+            sync_authorize();
             $b = body();
             $payload = $b['data'] ?? $b;
             if (!is_array($payload)) fail('数据格式不对');
@@ -1197,7 +1557,7 @@ try {
         }
 
         case 'sync/stats': {
-            perm_check_cap(admin_required(), 'sync');
+            sync_authorize();
             ok(['counts' => sync_stats(), 'modules' => array_keys(sync_modules())]);
         }
 
@@ -1539,7 +1899,7 @@ try {
            文件上传
            ===================================================== */
         case 'upload': {
-            perm_check_cap(admin_required(), 'write');
+            upload_authorize();
             if (empty($_FILES['file'])) fail('没有收到文件');
             $f = $_FILES['file'];
             if ($f['error'] !== UPLOAD_ERR_OK) fail('上传失败，错误码 ' . $f['error']);

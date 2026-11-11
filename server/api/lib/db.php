@@ -31,8 +31,9 @@ function db_config(): array
  * 2 → App 同步字段（uid / updated_at / 4 张新表）
  * 3 → 员工权限 perms、视频字段、字段级合并 field_ts
  * 4 → 视频封面地址 thumb_url
+ * 5 → 软件激活码：activation_codes / activations / activation_logs
  */
-const SCHEMA_VERSION = 4;
+const SCHEMA_VERSION = 5;
 
 function db(): PDO
 {
@@ -53,6 +54,7 @@ function db(): PDO
     if ($fresh) {
         init_schema($pdo);
         seed_data($pdo);
+        seed_license($pdo);
         schema_set_version($pdo, SCHEMA_VERSION);
         return $pdo;
     }
@@ -62,6 +64,7 @@ function db(): PDO
         init_schema($pdo);          // 幂等，补上可能缺的表
         migrate_schema($pdo);
         seed_recharge($pdo);
+        seed_license($pdo);
         schema_set_version($pdo, SCHEMA_VERSION);
     }
     return $pdo;
@@ -526,6 +529,80 @@ function init_schema(PDO $db): void
         KEY idx_created (created_at)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4";
 
+    /* ---------------- 软件激活码 ---------------- */
+    $sql[] = "CREATE TABLE IF NOT EXISTS activation_codes (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        code VARCHAR(40) NOT NULL UNIQUE COMMENT '激活码 MYA-XXXX-XXXX-XXXX',
+        batch VARCHAR(40) NOT NULL DEFAULT '' COMMENT '生成批次',
+        kind VARCHAR(20) NOT NULL DEFAULT '正式码' COMMENT '试用码/正式码/续期码/演示码/内部码',
+        duration_value INT NOT NULL DEFAULT 1 COMMENT '时长数值，永久时为 0',
+        duration_unit VARCHAR(10) NOT NULL DEFAULT '年' COMMENT '小时/天/周/月/季/年/永久',
+        duration_minutes INT NOT NULL DEFAULT 525600 COMMENT '授权总分钟数，0=永久',
+        max_devices INT NOT NULL DEFAULT 1 COMMENT '最多可激活几台设备',
+        amount DECIMAL(12,2) NOT NULL DEFAULT 0 COMMENT '随卡充值金额',
+        bonus DECIMAL(12,2) NOT NULL DEFAULT 0 COMMENT '随卡赠送金额',
+        points INT NOT NULL DEFAULT 0 COMMENT '随卡赠送积分',
+        start_at DATE NULL COMMENT '激活码生效日期',
+        expire_at DATE NULL COMMENT '激活码有效期至',
+        status VARCHAR(20) NOT NULL DEFAULT '未激活' COMMENT '未激活/已激活/已停用/已过期',
+        used_count INT NOT NULL DEFAULT 0 COMMENT '已激活设备数',
+        note VARCHAR(255) NULL,
+        created_by VARCHAR(120) NULL,
+        created_at DATETIME NOT NULL,
+        KEY idx_batch (batch),
+        KEY idx_status (status)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4";
+
+    /* ---------------- 已激活设备 ---------------- */
+    $sql[] = "CREATE TABLE IF NOT EXISTS activations (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        code_id INT NOT NULL,
+        code VARCHAR(40) NOT NULL,
+        device_id VARCHAR(80) NOT NULL COMMENT 'App 本机唯一编号',
+        device_name VARCHAR(120) NULL,
+        platform VARCHAR(30) NULL,
+        app_version VARCHAR(20) NULL,
+        member_id INT NULL,
+        member_phone VARCHAR(30) NULL,
+        license_key VARCHAR(64) NOT NULL UNIQUE COMMENT '设备凭证，App 本地保存',
+        activated_at DATETIME NOT NULL,
+        expire_at DATETIME NULL COMMENT '授权到期，NULL=永久',
+        last_seen_at DATETIME NULL,
+        status VARCHAR(20) NOT NULL DEFAULT '生效中' COMMENT '生效中/已停用/已过期',
+        note VARCHAR(255) NULL,
+        UNIQUE KEY uk_code_device (code_id, device_id),
+        KEY idx_device (device_id),
+        KEY idx_code (code_id),
+        KEY idx_status (status)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4";
+
+    /* ---------------- 激活 / 充能流水 ---------------- */
+    $sql[] = "CREATE TABLE IF NOT EXISTS activation_logs (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        code_id INT NULL,
+        code VARCHAR(40) NULL,
+        activation_id INT NULL,
+        device_id VARCHAR(80) NULL,
+        action VARCHAR(30) NOT NULL COMMENT '生成/激活/充能/停用/作废/解绑/删除/充值',
+        minutes INT NOT NULL DEFAULT 0,
+        amount DECIMAL(12,2) NOT NULL DEFAULT 0,
+        note VARCHAR(255) NULL,
+        created_by VARCHAR(120) NULL,
+        created_at DATETIME NOT NULL,
+        KEY idx_created (created_at),
+        KEY idx_code (code_id)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4";
+
+    /* 设备同步凭证：只有 sync/* 认它，后台管理接口不认 */
+    $sql[] = "CREATE TABLE IF NOT EXISTS device_tokens (
+        token VARCHAR(80) PRIMARY KEY,
+        activation_id INT NOT NULL,
+        device_id VARCHAR(80) NOT NULL,
+        expire_at DATETIME NOT NULL,
+        created_at DATETIME NOT NULL,
+        KEY idx_device (device_id)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4";
+
     foreach ($sql as $s) {
         $db->exec($s);
     }
@@ -558,6 +635,12 @@ function seed_data(PDO $db): void
         'recharge_default_days' => '365',
         'recharge_min' => '1',
         'recharge_notice' => '充值卡仅限本店会员使用，一经使用不可退换。',
+        'license_enabled' => '1',
+        'license_prefix' => 'MYA',
+        'license_default_days' => '365',
+        'license_grace_days' => '7',
+        'license_contact' => '请联系门店获取激活码',
+        'license_notice' => '本软件需激活后使用，激活码可向门店索取。',
     ];
     $st = $db->prepare('INSERT INTO settings(k,v) VALUES(?,?) ON DUPLICATE KEY UPDATE v=VALUES(v)');
     foreach ($settings as $k => $v) {
@@ -604,5 +687,20 @@ function seed_recharge(PDO $db): void
         'recharge_notice' => '充值卡仅限本店会员使用，一经使用不可退换。',
     ];
     $st = $db->prepare('INSERT INTO settings(k,v) VALUES(?,?) ON DUPLICATE KEY UPDATE v=VALUES(v)');
+    foreach ($defaults as $k => $v) $st->execute([$k, $v]);
+}
+
+/** 激活码默认设置：用 INSERT IGNORE，绝不覆盖门店已经改过的值 */
+function seed_license(PDO $db): void
+{
+    $defaults = [
+        'license_enabled'       => '1',
+        'license_prefix'        => 'MYA',
+        'license_default_days'  => '365',
+        'license_grace_days'    => '7',
+        'license_contact'       => '请联系门店获取激活码',
+        'license_notice'        => '本软件需激活后使用，激活码可向门店索取。',
+    ];
+    $st = $db->prepare('INSERT IGNORE INTO settings(k,v) VALUES(?,?)');
     foreach ($defaults as $k => $v) $st->execute([$k, $v]);
 }

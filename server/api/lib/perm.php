@@ -5,7 +5,7 @@
  * 角色是预设，单个账号可以用 admins.perms 里的 JSON 做覆盖。
  * 权限分两层：
  *   1) modules —— 能看/能改哪些业务模块（对应 modules() 的 key）
- *   2) caps    —— 能进哪些特殊功能（员工管理 / 系统设置 / 备份 / 短信 / 充值卡 / 同步）
+ *   2) caps    —— 能进哪些特殊功能（员工管理 / 系统设置 / 备份 / 短信 / 充值卡 / 激活码 / 同步）
  */
 declare(strict_types=1);
 
@@ -27,14 +27,16 @@ function perm_roles(): array
             'desc'    => '全部权限，含员工管理与系统设置',
             'modules' => $all,
             'caps'    => ['write' => true, 'staff' => true, 'settings' => true,
-                          'backup' => true, 'sms' => true, 'recharge' => true, 'sync' => true],
+                          'backup' => true, 'sms' => true, 'recharge' => true,
+                          'license' => true, 'sync' => true],
         ],
         'manager' => [
             'label'   => '店长',
             'desc'    => '除员工管理与系统设置外的全部业务',
             'modules' => $all,
             'caps'    => ['write' => true, 'staff' => false, 'settings' => false,
-                          'backup' => true, 'sms' => false, 'recharge' => true, 'sync' => true],
+                          'backup' => true, 'sms' => false, 'recharge' => true,
+                          'license' => false, 'sync' => true],
         ],
         'therapist' => [
             'label'   => '美容师',
@@ -42,7 +44,8 @@ function perm_roles(): array
             'modules' => ['customers', 'appointments', 'steps', 'notes', 'claims',
                           'photos', 'compares', 'mentors', 'products'],
             'caps'    => ['write' => true, 'staff' => false, 'settings' => false,
-                          'backup' => false, 'sms' => false, 'recharge' => false, 'sync' => true],
+                          'backup' => false, 'sms' => false, 'recharge' => false,
+                          'license' => false, 'sync' => true],
         ],
         'frontdesk' => [
             'label'   => '前台',
@@ -50,14 +53,16 @@ function perm_roles(): array
             'modules' => ['customers', 'appointments', 'payments', 'packages',
                           'members', 'subs', 'wallet'],
             'caps'    => ['write' => true, 'staff' => false, 'settings' => false,
-                          'backup' => false, 'sms' => false, 'recharge' => true, 'sync' => true],
+                          'backup' => false, 'sms' => false, 'recharge' => true,
+                          'license' => false, 'sync' => true],
         ],
         'viewer' => [
             'label'   => '只读',
             'desc'    => '只能查看，不能修改任何数据',
             'modules' => $all,
             'caps'    => ['write' => false, 'staff' => false, 'settings' => false,
-                          'backup' => false, 'sms' => false, 'recharge' => false, 'sync' => true],
+                          'backup' => false, 'sms' => false, 'recharge' => false,
+                          'license' => false, 'sync' => true],
         ],
     ];
 }
