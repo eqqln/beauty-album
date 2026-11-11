@@ -19,6 +19,7 @@ struct CompareView: View {
     @State private var slider: CGFloat = 0.5
     @State private var toast: String?
     @State private var didInit = false
+    @State private var fullScreen = false
 
     // 左右翻页
     @State private var pageIndex: Int = 0
@@ -80,6 +81,13 @@ struct CompareView: View {
             }
         }
         .onAppear(perform: initSelection)
+        .fullScreenCover(isPresented: $fullScreen) {
+            CompareFullscreen(before: url(beforePhoto),
+                              after: url(afterPhoto),
+                              beforeLabel: store.settings.beforeLabelSafe,
+                              afterLabel: store.settings.afterLabelSafe,
+                              mode: mode)
+        }
         .overlay(alignment: .bottom) {
             if let toast {
                 Text(toast)
@@ -146,7 +154,7 @@ struct CompareView: View {
                 .buttonStyle(.plain)
             }
             Spacer(minLength: 0)
-            Text(mode == .slider ? "拖圆点调对比" : "左右滑动换图")
+            Text(mode == .slider ? "拖圆点对比 · 点图放大" : "滑动换图 · 点图放大")
                 .font(.system(size: 11))
                 .foregroundColor(Theme.muted)
         }
@@ -269,6 +277,15 @@ struct CompareView: View {
                 isDragging = false
                 dragOnHandle = false
                 if wasHandle { return }
+
+                /* 基本没位移 = 用户是在「点」图，不是翻页：打开大图。
+                   DragGesture 的 minimumDistance 是 0，会吃掉普通点击，
+                   所以只能在这里判断，不能再叠一个 onTapGesture 抢手势。 */
+                if abs(v.translation.width) < 8 && abs(v.translation.height) < 8 {
+                    withAnimation(.easeOut(duration: 0.12)) { dragX = 0 }
+                    fullScreen = true
+                    return
+                }
 
                 let dx = v.translation.width
                 let projected = v.predictedEndTranslation.width
@@ -477,5 +494,261 @@ struct CompareView: View {
 
     private func clearToast() {
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.8) { toast = nil }
+    }
+}
+
+// MARK: - 全屏对比（点图放大）
+
+/// 点一下预览图就进这里：大图看细节，双指放大、双击还原，可切并排 / 滑块。
+struct CompareFullscreen: View {
+    let before: URL?
+    let after: URL?
+    let beforeLabel: String
+    let afterLabel: String
+
+    @Environment(\.dismiss) private var dismiss
+    @State private var mode: CompareMode
+    @State private var slider: CGFloat = 0.5
+    @State private var zoom: CGFloat = 1
+    @State private var lastZoom: CGFloat = 1
+    @State private var offset: CGSize = .zero
+    @State private var lastOffset: CGSize = .zero
+
+    init(before: URL?, after: URL?, beforeLabel: String, afterLabel: String, mode: CompareMode) {
+        self.before = before
+        self.after = after
+        self.beforeLabel = beforeLabel
+        self.afterLabel = afterLabel
+        _mode = State(initialValue: mode)
+    }
+
+    var body: some View {
+        ZStack {
+            Color.black.ignoresSafeArea()
+
+            GeometryReader { geo in
+                stage(w: geo.size.width, h: geo.size.height)
+                    .scaleEffect(zoom)
+                    .offset(offset)
+                    .gesture(magnification)
+                    .simultaneousGesture(pan)
+                    .onTapGesture(count: 2) { toggleZoom() }
+            }
+            .ignoresSafeArea()
+
+            VStack {
+                topBar
+                Spacer(minLength: 0)
+                bottomHint
+            }
+        }
+        .statusBarHidden(true)
+    }
+
+    // MARK: 顶栏
+
+    private var topBar: some View {
+        HStack(spacing: 12) {
+            Button {
+                dismiss()
+            } label: {
+                Image(systemName: "xmark")
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundColor(.white)
+                    .frame(width: 34, height: 34)
+                    .background(Color.white.opacity(0.16))
+                    .clipShape(Circle())
+            }
+            .buttonStyle(.plain)
+
+            Spacer(minLength: 0)
+
+            HStack(spacing: 4) {
+                ForEach(CompareMode.allCases) { m in
+                    let active = m == mode
+                    Button {
+                        withAnimation(.easeOut(duration: 0.15)) {
+                            mode = m
+                            resetZoom()
+                        }
+                    } label: {
+                        Text(m.rawValue)
+                            .font(.system(size: 12, weight: active ? .semibold : .regular))
+                            .foregroundColor(active ? Theme.roseDeep : .white.opacity(0.8))
+                            .padding(.horizontal, 13)
+                            .padding(.vertical, 6)
+                            .background(active ? Color.white : Color.white.opacity(0.16))
+                            .clipShape(Capsule())
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+
+            Spacer(minLength: 0)
+
+            Button {
+                toggleZoom()
+            } label: {
+                Image(systemName: zoom > 1 ? "minus.magnifyingglass" : "plus.magnifyingglass")
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundColor(.white)
+                    .frame(width: 34, height: 34)
+                    .background(Color.white.opacity(0.16))
+                    .clipShape(Circle())
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(.horizontal, 16)
+        .padding(.top, 8)
+    }
+
+    private var bottomHint: some View {
+        Text(mode == .slider ? "拖动中间圆点对比 · 双指放大 · 双击还原"
+                             : "双指放大 · 双击还原 · 放大后可拖动")
+            .font(.system(size: 11.5))
+            .foregroundColor(.white.opacity(0.55))
+            .padding(.bottom, 18)
+    }
+
+    // MARK: 画面
+
+    @ViewBuilder
+    private func stage(w: CGFloat, h: CGFloat) -> some View {
+        if mode == .side {
+            HStack(spacing: 2) {
+                cell(before, label: beforeLabel, isAfter: false, w: w / 2 - 1, h: h)
+                cell(after, label: afterLabel, isAfter: true, w: w / 2 - 1, h: h)
+            }
+            .frame(width: w, height: h)
+        } else {
+            ZStack {
+                fullImage(after, w: w, h: h)
+
+                fullImage(before, w: w, h: h)
+                    .mask(alignment: .leading) {
+                        Rectangle().frame(width: max(0, w * slider))
+                    }
+
+                ZStack {
+                    Rectangle().fill(Color.white).frame(width: 2)
+                    Circle()
+                        .fill(Color.white)
+                        .frame(width: 40, height: 40)
+                        .overlay(
+                            Image(systemName: "arrow.left.and.right")
+                                .font(.system(size: 14, weight: .semibold))
+                                .foregroundColor(Theme.roseDeep)
+                        )
+                        .shadow(color: .black.opacity(0.35), radius: 6)
+                }
+                .position(x: w * slider, y: h / 2)
+                .gesture(
+                    DragGesture(minimumDistance: 0)
+                        .onChanged { v in
+                            slider = min(1, max(0, v.location.x / w))
+                        }
+                )
+
+                VStack {
+                    HStack {
+                        tag(beforeLabel, isAfter: false)
+                        Spacer()
+                        tag(afterLabel, isAfter: true)
+                    }
+                    .padding(.horizontal, 14)
+                    .padding(.top, 56)
+                    Spacer()
+                }
+                .allowsHitTesting(false)
+            }
+            .frame(width: w, height: h)
+        }
+    }
+
+    private func cell(_ url: URL?, label: String, isAfter: Bool, w: CGFloat, h: CGFloat) -> some View {
+        ZStack(alignment: .topLeading) {
+            fullImage(url, w: w, h: h)
+            tag(label, isAfter: isAfter)
+                .padding(12)
+                .padding(.top, 44)
+        }
+        .frame(width: w, height: h)
+        .clipped()
+    }
+
+    private func fullImage(_ url: URL?, w: CGFloat, h: CGFloat) -> some View {
+        Group {
+            if let url, let img = UIImage(contentsOfFile: url.path) {
+                Image(uiImage: img)
+                    .resizable()
+                    .scaledToFit()
+                    .frame(width: w, height: h)
+            } else {
+                ZStack {
+                    Color.white.opacity(0.05)
+                    Text("图片不在本地")
+                        .font(.system(size: 12))
+                        .foregroundColor(.white.opacity(0.5))
+                }
+                .frame(width: w, height: h)
+            }
+        }
+    }
+
+    private func tag(_ text: String, isAfter: Bool) -> some View {
+        Text(text)
+            .font(.system(size: 11, weight: .semibold))
+            .foregroundColor(.white)
+            .padding(.horizontal, 9)
+            .padding(.vertical, 4)
+            .background(isAfter ? Theme.roseDeep.opacity(0.9) : Color.black.opacity(0.55))
+            .clipShape(Capsule())
+    }
+
+    // MARK: 手势
+
+    private var magnification: some Gesture {
+        MagnificationGesture()
+            .onChanged { v in
+                zoom = min(4, max(1, lastZoom * v))
+            }
+            .onEnded { _ in
+                lastZoom = zoom
+                if zoom <= 1.01 { resetZoom() }
+            }
+    }
+
+    private var pan: some Gesture {
+        DragGesture()
+            .onChanged { v in
+                guard zoom > 1, mode == .side else { return }
+                offset = CGSize(width: lastOffset.width + v.translation.width,
+                                height: lastOffset.height + v.translation.height)
+            }
+            .onEnded { _ in
+                guard zoom > 1 else { return }
+                lastOffset = offset
+            }
+    }
+
+    private func toggleZoom() {
+        withAnimation(.easeOut(duration: 0.2)) {
+            if zoom > 1 {
+                zoom = 1
+                lastZoom = 1
+                offset = .zero
+                lastOffset = .zero
+            } else {
+                zoom = 2.5
+                lastZoom = 2.5
+            }
+        }
+    }
+
+    private func resetZoom() {
+        zoom = 1
+        lastZoom = 1
+        offset = .zero
+        lastOffset = .zero
     }
 }

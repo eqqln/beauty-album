@@ -490,6 +490,72 @@ code{
 .cmp-img{width:100%;aspect-ratio:1/1;object-fit:cover;border-radius:10px;background:#f6f1ef;display:block}
 .cmp-miss{display:flex;align-items:center;justify-content:center;font-size:11px;
   color:var(--muted,#9b8b88);border:1px dashed #e3d5d2}
+.cmp-card{cursor:pointer;transition:box-shadow .16s ease,border-color .16s ease}
+.cmp-card:hover{border-color:var(--rose,#e8a0ad);box-shadow:0 8px 24px rgba(201,118,138,.14)}
+.cmp-open{font-size:11px;color:var(--rose-deep,#c9768a);text-align:center;font-weight:600}
+
+/* ---------- 对比图大图查看 ---------- */
+.cmp-lb{
+  position:fixed;inset:0;z-index:120;background:rgba(24,16,20,.94);
+  display:flex;flex-direction:column;animation:fade .16s ease;
+  /* #modalRoot 整体是 pointer-events:none，这一层要自己开回来，否则点不到 */
+  pointer-events:auto;
+}
+.cmp-lb-bar{display:flex;align-items:center;gap:12px;padding:12px 18px;flex:0 0 auto}
+.cmp-lb-title{flex:1;min-width:0;color:#fff;font-size:14px;font-weight:700;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.cmp-lb-sub{font-weight:400;font-size:11.5px;color:rgba(255,255,255,.55);margin-left:10px}
+.cmp-lb-modes{display:flex;gap:6px;background:rgba(255,255,255,.1);border-radius:999px;padding:3px}
+.cmp-lb-m{border:0;background:transparent;color:rgba(255,255,255,.72);font-size:12px;
+  padding:5px 14px;border-radius:999px;cursor:pointer;font-weight:600}
+.cmp-lb-m.on{background:#fff;color:#3a2f2d}
+.cmp-lb-x{border:0;background:rgba(255,255,255,.14);color:#fff;width:32px;height:32px;
+  border-radius:50%;cursor:pointer;font-size:14px}
+.cmp-lb-x:hover{background:rgba(255,255,255,.26)}
+.cmp-lb-stage{flex:1;min-height:0;display:flex;align-items:center;justify-content:center;padding:0 18px}
+.cmp-lb-side{display:flex;gap:10px;width:100%;height:100%;align-items:center;justify-content:center}
+.cmp-lb-cell{
+  position:relative;flex:1;min-width:0;height:100%;display:flex;align-items:center;justify-content:center;
+  overflow:hidden;border-radius:12px;cursor:zoom-in;background:rgba(255,255,255,.04);
+}
+.cmp-lb-cell.zoomed{cursor:zoom-out}
+.cmp-lb-cell img{max-width:100%;max-height:100%;object-fit:contain;display:block;
+  transition:transform .28s cubic-bezier(.22,.61,.36,1)}
+.cmp-lb-cell.zoomed img{transform:scale(2.4)}
+.cmp-lb-tag{
+  position:absolute;left:10px;top:10px;font-size:10.5px;font-weight:700;color:#fff;
+  background:rgba(0,0,0,.55);padding:3px 9px;border-radius:999px;pointer-events:none;
+}
+.cmp-lb-tag.after{background:rgba(201,118,138,.85)}
+.cmp-lb-slider{position:relative;width:100%;height:100%;overflow:hidden;border-radius:12px;
+  cursor:ew-resize;background:rgba(255,255,255,.04)}
+/* 两张图同尺寸叠放，「使用前」靠 clip-path 裁开，保证不被拉伸变形。
+   滑块模式用 cover 让两张铺满同一区域，否则长宽比不同的两张会在分割线两侧
+   各露一块空白，看起来像图没对齐 */
+.cmp-lb-slider img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover}
+.cmp-lb-handle{position:absolute;top:0;bottom:0;width:0;pointer-events:none}
+.cmp-lb-handle::before{content:'';position:absolute;top:0;bottom:0;left:-1px;width:2px;
+  background:#fff;box-shadow:0 0 8px rgba(0,0,0,.5)}
+.cmp-lb-handle span{
+  position:absolute;top:50%;left:0;transform:translate(-50%,-50%);
+  width:38px;height:38px;border-radius:50%;background:#fff;
+  box-shadow:0 3px 12px rgba(0,0,0,.35);
+}
+.cmp-lb-handle span::after{
+  content:'↔';position:absolute;inset:0;display:flex;align-items:center;justify-content:center;
+  font-size:15px;color:var(--rose-deep,#c9768a);font-weight:700;
+}
+.cmp-lb-foot{display:flex;align-items:center;gap:14px;padding:14px 18px;flex:0 0 auto}
+.cmp-lb-foot .btn{background:rgba(255,255,255,.14);color:#fff;border:0}
+.cmp-lb-foot .btn:disabled{opacity:.35;cursor:default}
+.cmp-lb-count{color:rgba(255,255,255,.75);font-size:12px;font-weight:600}
+.cmp-lb-hint{margin-left:auto;color:rgba(255,255,255,.45);font-size:11.5px}
+
+@media (max-width:720px){
+  .cmp-lb-side{flex-direction:column;gap:8px}
+  .cmp-lb-cell{width:100%}
+  .cmp-lb-hint{display:none}
+}
 
 /* 概览页顶部的「用户板块」条 */
 .tstrip{display:flex;flex-direction:column}

@@ -7,7 +7,7 @@
   var state = { admin: null, settings: {} };
 
   /* 与 index.html 里 ?v= 保持一致，用于检测浏览器缓存了旧脚本 */
-  var BUILD = '20261112c';
+  var BUILD = '20261112g';
 
   var NAV = [
     { group: '总览' },
@@ -2313,23 +2313,24 @@
       paint();
     }
 
-    function pair(p) {
-      var b = p.before_url
-        ? '<a href="' + UI.esc(p.before_url) + '" target="_blank"><img class="cmp-img" src="' + UI.esc(p.before_url) + '" loading="lazy" alt=""></a>'
-        : '<div class="cmp-img cmp-miss">缺使用前照片</div>';
-      var a = p.after_url
-        ? '<a href="' + UI.esc(p.after_url) + '" target="_blank"><img class="cmp-img" src="' + UI.esc(p.after_url) + '" loading="lazy" alt=""></a>'
-        : '<div class="cmp-img cmp-miss">缺使用后照片</div>';
-      return '<div class="cmp-card">' +
+    function thumb(url, cls) {
+      return url
+        ? '<img class="cmp-img ' + cls + '" src="' + UI.esc(url) + '" loading="lazy" alt="">'
+        : '<div class="cmp-img cmp-miss ' + cls + '">缺这张</div>';
+    }
+
+    function pair(p, i) {
+      return '<div class="cmp-card" data-pair="' + i + '">' +
         '<div class="cmp-head">' +
           '<div class="cmp-who">' + UI.esc(p.client_name || '未命名客户') +
             '<span class="cmp-idx">第 ' + p.index + ' 组</span></div>' +
           '<div class="cmp-time">' + UI.fmtDate(p.after_time || p.before_time) + '</div>' +
         '</div>' +
         '<div class="cmp-body">' +
-          '<div class="cmp-side"><div class="cmp-tag">使用前</div>' + b + '</div>' +
-          '<div class="cmp-side"><div class="cmp-tag after">使用后</div>' + a + '</div>' +
+          '<div class="cmp-side"><div class="cmp-tag">使用前</div>' + thumb(p.before_url, 'b') + '</div>' +
+          '<div class="cmp-side"><div class="cmp-tag after">使用后</div>' + thumb(p.after_url, 'a') + '</div>' +
         '</div>' +
+        '<div class="cmp-open">点开看大图 · 可切滑块对比</div>' +
       '</div>';
     }
 
@@ -2346,17 +2347,166 @@
         '<div class="card" style="margin-bottom:16px">' +
           '<div class="rc-head">' +
             '<strong>对比图</strong>' +
-            '<span class="td-sub">这里不用手工建。手机里同一个客户的「使用前」和「使用后」照片会按时间一一配对，手机上有几组，这里就有几组</span>' +
+            '<span class="td-sub">手机里同一个客户的「使用前」和「使用后」照片会按时间一一配对，手机上有几组，这里就有几组</span>' +
           '</div>' +
           '<p class="td-sub" style="margin-top:10px">共 ' + rows.length + ' 组 · 涉及 ' + people + ' 位客户。' +
-            '点图片可以看原图。要新增对比图，去手机相册里给这个客户添加「使用后」照片即可。</p>' +
+            '点任意一组看大图：可切「并排 / 滑块」，点图片再放大。要新增，去手机相册给这个客户加「使用后」照片即可。</p>' +
         '</div>' +
         (rows.length
           ? '<div class="cmp-grid">' + rows.map(pair).join('') + '</div>'
           : UI.empty('还没有对比图。给客户加「使用前」和「使用后」照片，这里会自动出现', '🔀'));
+
+      view.querySelectorAll('[data-pair]').forEach(function (el) {
+        el.onclick = function () {
+          openPair(rows, parseInt(el.getAttribute('data-pair'), 10));
+        };
+      });
     }
 
     load();
+  }
+
+  /**
+   * 大图查看：并排 / 滑块两种模式，点图片放大，←/→ 换组，Esc 关闭。
+   * 列表里点一张小图 → 这里放大看，不再新开浏览器标签页。
+   */
+  function openPair(rows, index) {
+    if (!rows || !rows.length) return;
+    var cur = Math.min(Math.max(0, index), rows.length - 1);
+    var mode = 'side';
+    var zoom = false;
+    var root = document.getElementById('modalRoot');
+    var cleanups = [];
+
+    var mask = document.createElement('div');
+    mask.className = 'cmp-lb';
+    root.appendChild(mask);
+
+    function close() {
+      document.removeEventListener('keydown', onKey);
+      cleanups.forEach(function (fn) { try { fn(); } catch (e) {} });
+      cleanups = [];
+      mask.remove();
+    }
+
+    function onKey(e) {
+      if (e.key === 'Escape') close();
+      else if (e.key === 'ArrowLeft') go(-1);
+      else if (e.key === 'ArrowRight') go(1);
+    }
+
+    function go(delta) {
+      var next = cur + delta;
+      if (next < 0 || next >= rows.length) return;
+      cur = next;
+      zoom = false;
+      render();
+    }
+
+    function render() {
+      var p = rows[cur];
+      var b = p.before_url;
+      var a = p.after_url;
+      mask.innerHTML =
+        '<div class="cmp-lb-bar">' +
+          '<div class="cmp-lb-title">' + UI.esc(p.client_name || '未命名客户') +
+            '<span class="cmp-lb-sub">第 ' + p.index + ' 组 · ' + UI.fmtDate(p.after_time || p.before_time) + '</span>' +
+          '</div>' +
+          '<div class="cmp-lb-modes">' +
+            '<button class="cmp-lb-m' + (mode === 'side' ? ' on' : '') + '" data-mode="side">并排</button>' +
+            '<button class="cmp-lb-m' + (mode === 'slider' ? ' on' : '') + '" data-mode="slider">滑块</button>' +
+          '</div>' +
+          '<button class="cmp-lb-x" data-close="1" title="关闭（Esc）">✕</button>' +
+        '</div>' +
+        '<div class="cmp-lb-stage' + (mode === 'slider' ? ' slider' : '') + '">' +
+          (mode === 'side'
+            ? '<div class="cmp-lb-side">' +
+                '<div class="cmp-lb-cell' + (zoom ? ' zoomed' : '') + '">' +
+                  (b ? '<img src="' + UI.esc(b) + '" alt="">' : '<div class="cmp-miss">缺使用前照片</div>') +
+                  '<span class="cmp-lb-tag">使用前</span></div>' +
+                '<div class="cmp-lb-cell' + (zoom ? ' zoomed' : '') + '">' +
+                  (a ? '<img src="' + UI.esc(a) + '" alt="">' : '<div class="cmp-miss">缺使用后照片</div>') +
+                  '<span class="cmp-lb-tag after">使用后</span></div>' +
+              '</div>'
+            : '<div class="cmp-lb-slider">' +
+                (a ? '<img class="cmp-lb-after" src="' + UI.esc(a) + '" alt="">' : '') +
+                (b ? '<img class="cmp-lb-before" src="' + UI.esc(b) + '" alt="" style="clip-path:inset(0 50% 0 0)">' : '') +
+                '<div class="cmp-lb-handle" style="left:50%"><span></span></div>' +
+                '<span class="cmp-lb-tag">使用前</span>' +
+                '<span class="cmp-lb-tag after" style="left:auto;right:10px">使用后</span>' +
+              '</div>') +
+        '</div>' +
+        '<div class="cmp-lb-foot">' +
+          '<button class="btn ghost sm" data-prev="1"' + (cur === 0 ? ' disabled' : '') + '>← 上一组</button>' +
+          '<span class="cmp-lb-count">' + (cur + 1) + ' / ' + rows.length + '</span>' +
+          '<button class="btn ghost sm" data-next="1"' + (cur === rows.length - 1 ? ' disabled' : '') + '>下一组 →</button>' +
+          '<span class="cmp-lb-hint">' + (mode === 'side' ? '点图片放大 / 再点还原' : '拖动中间圆点调对比') + '</span>' +
+        '</div>';
+
+      mask.querySelector('[data-close]').onclick = function () { close(); };
+      mask.querySelector('[data-prev]').onclick = function () { go(-1); };
+      mask.querySelector('[data-next]').onclick = function () { go(1); };
+      mask.querySelectorAll('[data-mode]').forEach(function (btn) {
+        btn.onclick = function () {
+          mode = btn.getAttribute('data-mode');
+          zoom = false;
+          render();
+        };
+      });
+      mask.onclick = function (e) { if (e.target === mask) close(); };
+
+      if (mode === 'side') {
+        mask.querySelectorAll('.cmp-lb-cell').forEach(function (cell) {
+          cell.onclick = function (e) {
+            /* 以点击位置为放大中心，放大的地方就是你看的地方 */
+            var r = cell.getBoundingClientRect();
+            var px = ((e.clientX - r.left) / r.width) * 100;
+            var py = ((e.clientY - r.top) / r.height) * 100;
+            zoom = !zoom;
+            cell.classList.toggle('zoomed', zoom);
+            var img = cell.querySelector('img');
+            if (img) img.style.transformOrigin = px + '% ' + py + '%';
+          };
+        });
+      } else {
+        setupSlider(mask.querySelector('.cmp-lb-slider'));
+      }
+    }
+
+    function setupSlider(stage) {
+      if (!stage) return;
+      var before = stage.querySelector('.cmp-lb-before');
+      var handle = stage.querySelector('.cmp-lb-handle');
+      if (!before || !handle) return;
+      var dragging = false;
+
+      /* 两张图同尺寸叠放，只改「使用前」的裁剪宽度，图本身不会被拉伸 */
+      function move(clientX) {
+        var r = stage.getBoundingClientRect();
+        var pct = Math.min(100, Math.max(0, ((clientX - r.left) / r.width) * 100));
+        before.style.clipPath = 'inset(0 ' + (100 - pct) + '% 0 0)';
+        handle.style.left = pct + '%';
+      }
+      function down(e) {
+        dragging = true;
+        move(e.clientX);
+        e.preventDefault();
+      }
+      function up() { dragging = false; }
+      function mv(e) { if (dragging) move(e.clientX); }
+
+      stage.addEventListener('pointerdown', down);
+      window.addEventListener('pointermove', mv);
+      window.addEventListener('pointerup', up);
+      /* 关闭时把全局监听摘掉，避免越积越多 */
+      cleanups.push(function () {
+        window.removeEventListener('pointermove', mv);
+        window.removeEventListener('pointerup', up);
+      });
+    }
+
+    document.addEventListener('keydown', onKey);
+    render();
   }
 
   /* ---------------- 板块管理 ---------------- */
