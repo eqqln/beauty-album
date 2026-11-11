@@ -6,9 +6,14 @@
 
   var state = { admin: null, settings: {} };
 
+  /* 与 index.html 里 ?v= 保持一致，用于检测浏览器缓存了旧脚本 */
+  var BUILD = '20261112b';
+
   var NAV = [
     { group: '总览' },
     { key: 'overview', title: '概览', icon: '📊', sub: '今日经营情况' },
+    /* 放在最上面第二个：每个客户一块独立资料区，这是后台最该先看的东西 */
+    { key: 'tenants', title: '用户板块', icon: '🗂️', cap: 'license', sub: '每个客户一块独立资料区，点「进入」就只看他的数据' },
     { group: '经营' },
     { key: 'packages', title: '套餐', icon: '🎁', sub: '套餐内容与价格，App 端同步展示' },
     { key: 'm:members', title: '会员', icon: '👤', sub: 'App 注册用户与等级' },
@@ -31,7 +36,6 @@
     { key: 'recharge', title: '充值卡', icon: '💳', cap: 'recharge', sub: '批量生成卡号卡密，App 内直接充值' },
     { key: 'm:wallet', title: '钱包流水', icon: '📒', sub: '充值、消费、调整的完整流水' },
     { group: '系统' },
-    { key: 'tenants', title: '板块管理', icon: '🗂️', cap: 'license', sub: '一个激活码一个板块，资料互不掺和' },
     { key: 'license', title: '激活码', icon: '🔑', cap: 'license', sub: '软件授权、设备管理、充能续期' },
     { key: 'staff', title: '员工管理', icon: '🧑‍💼', cap: 'staff', sub: '加员工、设岗位、分权限' },
     { key: 'sms', title: '短信', icon: '✉️', cap: 'sms', sub: '多家短信通道与发送记录' },
@@ -238,12 +242,40 @@
       }
     } catch (e) { /* ignore */ }
     buildNav();
+    checkBuild();
     await initTenantPicker();
     if (!location.hash) location.hash = '#/overview';
     route();
   }
 
+  /* ---------------- 版本自检 ---------------- */
+
+  /**
+   * 静态资源带 ?v= 版本号，但浏览器仍可能缓存住旧的 app.js，
+   * 那样新加的菜单项永远不会出现。这里跟 index.html 里写的版本对一下，
+   * 对不上就提示强刷，省得再出现「功能明明做了却看不到」。
+   */
+  function checkBuild() {
+    var el = $('sideBuild');
+    if (!el) return;
+    var htmlVer = (el.textContent || '').trim();
+    if (htmlVer !== BUILD) {
+      UI.toast('后台有新版本（' + htmlVer + '），请按 Ctrl+F5 / ⌘+Shift+R 强制刷新', 'bad');
+      return;
+    }
+    el.textContent = '后台版本 ' + BUILD;
+  }
+
   /* ---------------- 板块切换器 ---------------- */
+
+  /* 用户手动选过板块就记一笔，之后不再自动替他切 */
+  var TENANT_MANUAL_KEY = 'meiyan_tenant_manual';
+  function tenantManual() {
+    try { return localStorage.getItem(TENANT_MANUAL_KEY) === '1'; } catch (e) { return false; }
+  }
+  function markTenantManual() {
+    try { localStorage.setItem(TENANT_MANUAL_KEY, '1'); } catch (e) { /* ignore */ }
+  }
 
   /**
    * 平台账号（tenant_id = 0）可以在顶栏切换板块，所有列表跟着变。
@@ -273,8 +305,10 @@
     }
 
     /* 默认板块是空的、又只有一块真实板块时，自动切过去。
-       否则店一进后台看到的全是 0，会以为手机上的客户没同步上来。 */
-    if (cur === 0) {
+       否则店一进后台看到的全是 0，会以为手机上的客户没同步上来。
+       但只要用户自己动手选过板块，就再也不要替他做主了，
+       否则点「进入默认板块」会被立刻顶回来。 */
+    if (cur === 0 && !tenantManual()) {
       var def = rows.find(function (t) { return t.id === 0; });
       var others = rows.filter(function (t) { return t.id !== 0 && t.status === '正常'; });
       var defEmpty = !def || !def.counts ||
@@ -305,6 +339,7 @@
     wrap.hidden = false;
 
     sel.onchange = async function () {
+      markTenantManual();
       API.setTenant(sel.value);
       /* 店名、标语这些跟着板块走，切完要重新读一遍设置 */
       try {
@@ -359,7 +394,10 @@
         continue;
       }
       out.push('<button class="nav-item" data-key="' + n.key + '">' +
-        '<span class="ico">' + n.icon + '</span>' + UI.esc(n.title) + '</button>');
+        '<span class="ico">' + n.icon + '</span>' +
+        '<span class="nav-txt">' + UI.esc(n.title) + '</span>' +
+        (n.key === 'tenants' ? '<span class="nav-count" id="navTenantCount"></span>' : '') +
+        '</button>');
     }
     nav.innerHTML = out.join('');
     nav.querySelectorAll('.nav-item').forEach(function (btn) {
@@ -424,7 +462,14 @@
         { k: '产品', v: UI.num(s.products), d: '在售产品' },
         { k: '代理', v: UI.num(s.agents), d: '合作中' }
       ];
-      var html = '<div class="grid g4">' + cards.map(function (c) {
+      /* 用户板块放最上面：先看清「有几个用户、各自多少数据」，再看经营数字 */
+      var html = '<div class="section-head"><h3>用户板块</h3><div class="sp"></div>' +
+        '<button class="btn sm ghost" onclick="location.hash=\'#/tenants\'">管理全部板块</button></div>';
+      html += '<div class="card" id="tenantStrip" style="padding:0;overflow:hidden">' +
+        '<div style="padding:16px"><span class="td-sub">读取中…</span></div></div>';
+
+      html += '<div class="section-head"><h3>经营数据</h3><div class="sp"></div></div>';
+      html += '<div class="grid g4">' + cards.map(function (c) {
         return '<div class="card stat"><div class="k">' + c.k + '</div>' +
           '<div class="v ' + (c.cls || '') + '">' + c.v + '</div>' +
           '<div class="d">' + UI.esc(c.d) + '</div></div>';
@@ -488,10 +533,78 @@
       html += '</div>';
 
       view.innerHTML = html;
+      loadTenantStrip();
       loadSyncPanel();
     } catch (e) {
       view.innerHTML = UI.empty(e.message, '⚠️');
     }
+  }
+
+  /* 概览顶部的用户板块条：每一行一个人，点「进入」就切过去 */
+  async function loadTenantStrip() {
+    var box = $('tenantStrip');
+    if (!box) return;
+    var d;
+    try {
+      d = await API.get('admin/tenant-list');
+    } catch (e) {
+      box.innerHTML = '<div style="padding:16px"><span class="td-sub">板块读取失败：' + UI.esc(e.message) + '</span></div>';
+      return;
+    }
+    var rows = (d && d.rows) || [];
+    var cur = d && d.current;
+    var cnt = $('navTenantCount');
+    if (cnt) cnt.textContent = rows.length || '';
+    if (!rows.length) {
+      box.innerHTML = UI.empty('还没有板块', '🗂️');
+      return;
+    }
+    box.innerHTML = '<div class="tstrip">' + rows.map(function (t) {
+      var c = t.counts || {};
+      var on = cur === t.id;
+      var nm = t.id === 0 ? '默认板块' : (t.shop_name || t.name || ('板块 #' + t.id));
+      var meta = [];
+      if (t.name && t.name !== nm) meta.push(t.name);
+      if (t.phone) meta.push(t.phone);
+      if (t.license_left) meta.push('授权 ' + t.license_left);
+      return '<div class="tstrip-row' + (on ? ' on' : '') + '">' +
+        '<div class="tstrip-main">' +
+          '<div class="tstrip-nm">' + UI.esc(nm) +
+            (on ? '<span class="tenant-badge">当前</span>' : '') +
+            (t.status !== '正常' ? '<span class="tenant-badge off">已停用</span>' : '') +
+          '</div>' +
+          '<div class="tstrip-meta">' + UI.esc(meta.join(' · ') || '还没有归属人') + '</div>' +
+        '</div>' +
+        '<div class="tstrip-nums">' +
+          '<span>客户 <b>' + UI.num(c.customers || 0) + '</b></span>' +
+          '<span>照片 <b>' + UI.num(c.photos || 0) + '</b></span>' +
+          '<span>步骤 <b>' + UI.num(c.steps || 0) + '</b></span>' +
+          '<span>预约 <b>' + UI.num(c.appointments || 0) + '</b></span>' +
+        '</div>' +
+        '<div class="tstrip-act">' +
+          (on ? '<span class="td-sub">正在查看</span>'
+              : '<button class="btn primary sm" data-enter="' + t.id + '">进入</button>') +
+        '</div>' +
+      '</div>';
+    }).join('') + '</div>';
+
+    box.querySelectorAll('[data-enter]').forEach(function (b) {
+      b.onclick = async function () {
+        var id = parseInt(b.getAttribute('data-enter'), 10);
+        markTenantManual();
+        API.setTenant(id);
+        try {
+          state.settings = await API.get('settings/get') || {};
+          if (state.settings.shop_name) {
+            $('sideShopName').textContent = state.settings.shop_name;
+            document.title = state.settings.shop_name + ' · 管理后台';
+          }
+        } catch (e) { /* ignore */ }
+        await initTenantPicker();
+        route();
+        UI.toast('已切到该板块', 'ok');
+      };
+    });
   }
 
   /* 概览里的同步状态：拉各模块条数，标出还没上云的项目 */
@@ -2248,7 +2361,7 @@
       view.innerHTML =
         '<div class="card" style="margin-bottom:16px">' +
           '<div class="rc-head">' +
-            '<strong>板块管理</strong>' +
+            '<strong>用户板块</strong>' +
             '<span class="td-sub">每个激活码对应一个人、一块独立资料区。客户、相册、护理步骤、产品、预约都只属于自己那块，和别人不掺和</span>' +
           '</div>' +
           '<div class="bk-actions" style="margin-top:12px">' +
@@ -2282,6 +2395,7 @@
 
     async function act(a, t) {
       if (a === 'enter' || a === 'leave') {
+        markTenantManual();
         API.setTenant(a === 'leave' ? 0 : t.id);
         try {
           state.settings = await API.get('settings/get') || {};

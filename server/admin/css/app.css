@@ -152,10 +152,18 @@ a{color:var(--rose-deep);text-decoration:none}
 .nav-item:hover{background:#faf4f6}
 .nav-item.active{background:var(--rose-light);color:var(--rose-deep);font-weight:700}
 .nav-item .ico{width:18px;text-align:center;font-size:14px;opacity:.85}
+.nav-item .nav-txt{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.nav-count{
+  min-width:18px;height:18px;padding:0 5px;border-radius:999px;
+  background:var(--rose-deep,#c9768a);color:#fff;
+  font-size:10.5px;font-weight:700;line-height:18px;text-align:center;
+}
+.nav-count:empty{display:none}
 .nav-group{font-size:10.5px;color:var(--muted);padding:11px 11px 4px;letter-spacing:.6px;font-weight:700}
 .side-foot{border-top:1px solid var(--line);padding-top:11px;display:flex;flex-direction:column;gap:9px}
 .side-foot-btns{display:flex;gap:7px}
 .side-foot-btns .btn{flex:1;padding:8px 6px;font-size:12px}
+.side-build{font-size:10.5px;color:var(--muted,#9b8b88);text-align:center;letter-spacing:.3px}
 .side-user{display:flex;align-items:center;gap:9px;padding:0 4px;min-width:0}
 .avatar{
   width:32px;height:32px;border-radius:50%;background:var(--rose-light);color:var(--rose-deep);
@@ -465,6 +473,31 @@ code{
   white-space: nowrap;
 }
 .tenant-badge.off { background: #f2f2f2; color: #888; }
+
+/* 概览页顶部的「用户板块」条 */
+.tstrip{display:flex;flex-direction:column}
+.tstrip-row{
+  display:flex;align-items:center;gap:14px;padding:13px 16px;
+  border-bottom:1px solid var(--line,#f0e8e6);
+}
+.tstrip-row:last-child{border-bottom:0}
+.tstrip-row.on{background:var(--rose-light,#fdf1f3)}
+.tstrip-main{flex:1;min-width:0}
+.tstrip-nm{
+  font-size:14px;font-weight:700;color:var(--ink,#3a2f2d);
+  display:flex;align-items:center;gap:7px;flex-wrap:wrap;
+}
+.tstrip-meta{font-size:11.5px;color:var(--muted,#9b8b88);margin-top:2px}
+.tstrip-nums{
+  display:flex;gap:14px;font-size:11.5px;color:var(--muted,#9b8b88);white-space:nowrap;
+}
+.tstrip-nums b{color:var(--ink,#3a2f2d);font-size:13.5px;margin-left:3px}
+.tstrip-act{flex:0 0 auto;min-width:64px;text-align:right}
+@media (max-width:720px){
+  .tstrip-row{flex-wrap:wrap;gap:8px}
+  .tstrip-nums{order:3;width:100%;gap:10px}
+  .tstrip-act{min-width:0}
+}
 .tenant-nums {
   display: flex;
   gap: 0;
