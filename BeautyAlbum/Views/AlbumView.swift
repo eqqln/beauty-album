@@ -375,6 +375,7 @@ struct AlbumView: View {
         Task {
             var added = 0
             var failMsg: String?
+            var bigWarn = false
             for item in items {
                 /* 优先走 FileRepresentation 直接拿文件，拿不到再退回复制 Data，
                    有些视频（尤其是 iCloud 里的、HEVC 的）第一种方式会直接返回 nil */
@@ -402,6 +403,10 @@ struct AlbumView: View {
                     continue
                 }
                 photo.phase = phase
+                /* 超过 200MB 云端会拒收，早点告诉用户，别等同步时才发现 */
+                let vurl = store.videoURL(clientID: clientID, photo: photo)
+                let bytes = (try? FileManager.default.attributesOfItem(atPath: vurl.path)[.size] as? NSNumber)?.int64Value ?? 0
+                if bytes > 200 * 1024 * 1024 { bigWarn = true }
                 await MainActor.run {
                     client.photos.append(photo)
                 }
@@ -412,7 +417,9 @@ struct AlbumView: View {
                 importing = false
                 videoPickerItems = []
                 if added > 0 {
-                    showToast("已添加 \(added) 段\(store.settings.label(for: phase))视频")
+                    var t = "已添加 \(added) 段\(store.settings.label(for: phase))视频"
+                    if bigWarn { t += "；有视频超过 200MB，云端可能传不上去，建议先压缩" }
+                    showToast(t)
                 } else {
                     showToast(failMsg ?? "视频导入失败，换一段再试")
                 }

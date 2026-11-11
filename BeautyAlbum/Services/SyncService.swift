@@ -1372,15 +1372,24 @@ final class SyncService: ObservableObject {
             }
         }
 
+        /* 传不上去的文件以前是静默跳过的：后台图片裂开、换手机也拉不回来，
+           用户只看到「视频没用」。这里记下来，同步结束时给一句明白话。 */
+        var tooBig = 0
+        var failed = 0
+
         for c in store.clients {
             for p in c.photos {
                 let key = "\(c.id.uuidString)/\(p.fileName)"
                 let limit: Int = p.isVideo ? 200 * 1024 * 1024 : 11 * 1024 * 1024
                 if imageURLs[key]?.isEmpty ?? true {
                     let url = store.photoURL(clientID: c.id, fileName: p.fileName)
-                    if let data = try? Data(contentsOf: url), !data.isEmpty, data.count <= limit {
-                        if let path = try? await CloudAPI.shared.uploadImage(data, fileName: p.fileName, token: token) {
+                    if let data = try? Data(contentsOf: url), !data.isEmpty {
+                        if data.count > limit {
+                            tooBig += 1
+                        } else if let path = try? await CloudAPI.shared.uploadImage(data, fileName: p.fileName, token: token) {
                             imageURLs[key] = path
+                        } else {
+                            failed += 1
                         }
                     }
                 }
@@ -1399,6 +1408,13 @@ final class SyncService: ObservableObject {
             }
         }
         flushImages()
+
+        if tooBig > 0 || failed > 0 {
+            var msg: [String] = []
+            if tooBig > 0 { msg.append("\(tooBig) 个文件超过 200MB 没传上去，剪辑或压缩一下再试") }
+            if failed > 0 { msg.append("\(failed) 个文件上传失败，检查网络后重新同步") }
+            await MainActor.run { self.errorText = msg.joined(separator: "；") }
+        }
     }
 
     /// 云端有、本地缺的照片下载回来
