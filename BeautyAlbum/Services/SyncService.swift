@@ -36,8 +36,15 @@ final class SyncService: ObservableObject {
     private let kImg   = "sync.imgurl"
     private let kDirty = "sync.dirty"
     private let kSnap  = "sync.snapshot"
+    /// 首次激活的「本地整份上传」是否已经做过
+    private let kBoot  = "sync.firstpush"
     /// 店铺设置这条记录的固定 uid
     static let shopUID = "00000000-0000-4000-8000-000000000001"
+
+    /// 首次激活时要把本地整份推上去的模块清单
+    private static let allModules = ["customers", "photos", "steps", "notes", "payments", "claims",
+                                     "teachers", "products", "agents", "agent_orders",
+                                     "appointments", "settings"]
 
     /// "模块|uid" → 本地最后改动时间
     private var localTouch: [String: Date] = [:]
@@ -238,8 +245,52 @@ final class SyncService: ObservableObject {
         observeLocalChanges(store)
         startPeriodicPull(store)
         if isLoggedIn {
-            Task { await runSync(store: store, doPull: true, silent: true) }
+            Task { await bootSync(store: store) }
         }
+    }
+
+    /// 激活后的第一次同步。
+    ///
+    /// 单机版升级上来的用户，本地早就存着一堆客户、护理步骤和照片，但云端是空的。
+    /// 原来的 activate 只做「拉」，云端空 → 什么都不发生 → 本地数据永远上不去，
+    /// 换手机时自然也就恢复不出来。所以这里先探一次云端：
+    /// - 云端空、本地有货 → 把本地整份推上去
+    /// - 云端有货 → 只合并，不推，避免手机上的旧数据把云端新的盖掉
+    private func bootSync(store: Store) async {
+        guard let token = shopToken, !token.isEmpty else { return }
+        if UserDefaults.standard.bool(forKey: kBoot) {
+            await runSync(store: store, doPull: true, silent: true)
+            return
+        }
+
+        var serverRows = 0
+        do {
+            let raw = try await CloudAPI.shared.syncPull(since: nil, token: token)
+            let data = raw["data"] as? [String: Any] ?? [:]
+            for (_, v) in data {
+                if let rows = v as? [[String: Any]] { serverRows += rows.count }
+            }
+            if serverRows == 0 && hasLocalData(store: store) {
+                Self.allModules.forEach { markDirty($0) }
+            }
+            suppressPushUntil = Date().addingTimeInterval(3)
+            _ = merge(data: data, store: store)
+        } catch {
+            /* 探测失败不阻断，交给下面的 runSync 走正常流程 */
+        }
+
+        await runSync(store: store, doPull: true, silent: true)
+        /* 推成功了 dirtyModules 才会被清空；失败就留着，下次启动再试一次 */
+        if dirtyModules.isEmpty {
+            UserDefaults.standard.set(true, forKey: kBoot)
+        }
+    }
+
+    /// 本地有没有值得推上去的东西
+    private func hasLocalData(store: Store) -> Bool {
+        if !store.clients.isEmpty || !store.teachers.isEmpty { return true }
+        if !store.appointments.isEmpty || !store.products.isEmpty || !store.agents.isEmpty { return true }
+        return false
     }
 
     /// 监听本地数据变化，1.2 秒防抖后静默推送
