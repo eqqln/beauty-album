@@ -44,8 +44,10 @@ targets:
         CFBundleLocalizations:
           - zh-Hans
           - en
-        CFBundleShortVersionString: "1.6.0"
-        CFBundleVersion: "15"
+        # 这里必须用变量，写死数字会让 MARKETING_VERSION 失效，
+        # 出包永远是同一个版本号（之前 1.6.0(15) 就是这么卡住的）
+        CFBundleShortVersionString: "$(MARKETING_VERSION)"
+        CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
         LSRequiresIPhoneOS: true
         UILaunchScreen:
           UIColorName: LaunchBackground
