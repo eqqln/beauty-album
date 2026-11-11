@@ -43,14 +43,16 @@ enum ServerURL {
 
     // MARK: 内置地址
 
-    /// `https://meiyan.shengka.net` 的混淆形态。
+    /// `https://meiyan.shengka.net` 的混淆形态（明文不写在这里，否则 strings 直接能搜到）。
     /// 改域名时用同一套算法重新算一遍（后台「系统设置」里能看到当前值）。
     private static let builtinCipher = "JS01QkMIGWQgPChLUVwYOCU8L1VbUxglKC0"
 
     /// 内置默认地址（运行时解出来）
+    ///
+    /// 这里**不能**写明文兜底：`return v.isEmpty ? "https://..." : v` 会把域名重新塞回二进制，
+    /// 等于白混淆。常量固定，decode 不会失败，真空了就让请求报「服务器地址不正确」。
     static var builtin: String {
-        let v = decode(builtinCipher)
-        return v.isEmpty ? "https://meiyan.shengka.net" : v
+        decode(builtinCipher)
     }
 
     // MARK: 显示方式
