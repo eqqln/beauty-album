@@ -1338,12 +1338,53 @@ try {
 
         /** 解绑设备：收回这台设备占的名额，旧手机下次打开要重新激活。
             换手机时必须先解绑，否则 max_devices=1 的码永远激活不了新机。
-            解绑只解除"这台设备能用"，不动板块里的资料。 */
+            解绑只解除"这台设备能用"，不动板块里的资料。
+            传 id 解一台；传 code_id 把这张码下的设备全部解绑。 */
         case 'admin/license-device-unbind': {
             $a = admin_required();
             perm_check_cap($a, 'license');
-            $id = inp_int('id');
+            $id     = inp_int('id');
+            $codeId = inp_int('code_id');
             $db = db();
+
+            /* ---------- 整张码解绑：激活码列表上的「解绑」按钮 ---------- */
+            if ($id <= 0 && $codeId > 0) {
+                $st = $db->prepare('SELECT * FROM activation_codes WHERE id=?');
+                $st->execute([$codeId]);
+                $c = $st->fetch();
+                if (!$c) fail('激活码不存在');
+
+                $st = $db->prepare("SELECT id, device_id FROM activations WHERE code_id=? AND status<>'已解绑'");
+                $st->execute([$codeId]);
+                $rows = $st->fetchAll() ?: [];
+                if (!$rows) fail('这张码下没有已绑定的设备，不用解绑');
+
+                $db->beginTransaction();
+                try {
+                    foreach ($rows as $d) {
+                        $db->prepare("UPDATE activations SET status='已解绑', note=? WHERE id=?")
+                           ->execute(['后台整张解绑，腾出设备名额', (int)$d['id']]);
+                        /* 作废设备凭证：旧手机下次请求直接失效 */
+                        try {
+                            $db->prepare('DELETE FROM device_tokens WHERE activation_id=?')->execute([(int)$d['id']]);
+                        } catch (Throwable $e) {}
+                    }
+                    /* 整张解绑，名额直接归零，不留半截；已停用/已过期的状态不动 */
+                    $db->prepare('UPDATE activation_codes SET used_count=0 WHERE id=?')->execute([$codeId]);
+                    $db->prepare("UPDATE activation_codes SET status='未激活' WHERE id=? AND status IN ('已激活','未激活')")
+                       ->execute([$codeId]);
+                    license_log('解绑', $codeId, (string)$c['code'], null, null, 0, 0,
+                                '整张解绑 ' . count($rows) . ' 台设备，名额已全部收回',
+                                (string)($a['email'] ?: ''));
+                    $db->commit();
+                } catch (Throwable $e) {
+                    if ($db->inTransaction()) $db->rollBack();
+                    fail($e->getMessage());
+                }
+                ok(['count' => count($rows)], '已解绑 ' . count($rows) . ' 台设备，名额全部收回');
+            }
+
+            /* ---------- 单台解绑：设备明细弹窗里的「解绑」按钮 ---------- */
             $st = $db->prepare('SELECT * FROM activations WHERE id=?');
             $st->execute([$id]);
             $d = $st->fetch();

@@ -1870,6 +1870,7 @@
         var acts = '<button class="btn sm ghost" data-lcdev="' + r.id + '">设备</button> ';
         if (r.used_count > 0) {
           acts += '<button class="btn sm ghost" data-lcboost="' + r.id + '">充能</button> ';
+          acts += '<button class="btn sm ghost" data-lcunbind="' + r.id + '">解绑</button> ';
         }
         acts += '<button class="btn sm ghost" data-lcvoid="' + r.id + '" data-void="' + (r.status === '已停用' ? 0 : 1) + '">' +
                 (r.status === '已停用' ? '恢复' : '停用') + '</button> ';
@@ -1908,6 +1909,23 @@
           var id = Number(b.getAttribute('data-lcboost'));
           var row = rows.find(function (x) { return Number(x.id) === id; });
           boostDialog(id, row);
+        };
+      });
+      wrap.querySelectorAll('[data-lcunbind]').forEach(function (b) {
+        b.onclick = function () {
+          var id = Number(b.getAttribute('data-lcunbind'));
+          var row = rows.find(function (x) { return Number(x.id) === id; }) || {};
+          var n = row.used_count || 0;
+          UI.confirm('解绑这张激活码下的 ' + n + ' 台设备',
+            '解绑做三件事：把这张码的 ' + n + ' 个设备名额全部收回来、让这些手机下次打开时要求重新激活、把状态改回「未激活」。\n' +
+            '板块里的客户、相册、护理步骤、预约、收款一条都不会动，服务器上原样保留。\n' +
+            '换手机就是：这里点解绑 → 新手机用同一张码激活 → 后台点「恢复到手机」。',
+            function () {
+              API.post('admin/license-device-unbind', { code_id: id }).then(function (r) {
+                UI.toast((r && r.count ? '已解绑 ' + r.count + ' 台设备，名额已收回' : '已解绑'), 'ok');
+                loadLicenseCodes(view);
+              }).catch(function (e) { UI.toast(e.message, 'bad'); });
+            }, false, '确认解绑');
         };
       });
       wrap.querySelectorAll('[data-lcvoid]').forEach(function (b) {
