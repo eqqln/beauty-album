@@ -221,6 +221,7 @@ final class LicenseService: ObservableObject {
 
     // MARK: 工具
 
+    @MainActor
     private func apply(_ r: CloudLicenseVerify) {
         let d = UserDefaults.standard
         if let s = r.syncToken, !s.isEmpty {
