@@ -272,3 +272,40 @@ CFBundleVersion: "9"
 - **照片双向传输**：首次全量同步时照片多的店会比较慢（每张 200–500KB）。
 - **冲突粒度是整行**，不是字段级。同一行两边同时改，后改的整行胜出。
 - **未做增量字段同步**：`sync/push` 每次发送整行，不是 diff。
+
+## 九、对比图为什么不走 compares 表（1.6.3 修）
+
+App 里根本没有「对比图」这张表。`CompareView` 是拿同一个客户的
+`beforePhotos` / `afterPhotos` 各按时间倒序，**按下标一一配对**，组数取两边较大值，
+短的那边用最后一张兜底。
+
+后台以前去读 `compares` 表，而 App 从来不写这张表 → 后台「对比图」永远是空的，
+看起来就是「对比图功能没同步」。其实照片（带 `phase`）早就传上来了，只是后台不会算。
+
+1.6.3 起改成**服务端现算**：`sync.php` 的 `compare_pairs()` 用与 App 完全相同的规则
+从 `photos` 推导，`sync_stats()` 里 `compares` 也换成配对组数，
+新增 `admin/compare-pairs` 给后台用，后台「对比图」页走独立渲染（`renderCompares`）。
+
+好处：不存冗余数据，手机删一张照片，后台配对立刻跟着变，不会留脏行。
+
+## 十、视频传不上去的三个坑（1.6.3 修）
+
+1. **抽帧用了同步 API**：`asset.duration` + `copyCGImage(at:)` 在 iOS 16 上对刚拷进来的
+   文件经常拿不到值，时长变 0、抽帧抛错 → 视频进了列表但封面是黑的、时长 0:00。
+   改成 `await asset.load(.duration)` + `await gen.image(at:)`。
+2. **服务器上限 50MB**：App 允许 200MB，nginx 与 PHP 却卡在 50m/50M，超过就传不上去，
+   而且是**静默失败**。已把 `client_max_body_size` 与 `upload_max_filesize` 提到 200M。
+   注意该 php.ini 带 `chattr +i`，改之前要 `chattr -i`，改完记得加回去。
+3. **`loadTransferable(PickedVideo.self)` 返回 nil**：iCloud 里没下载完的、HEVC 的会失败。
+   现在先试 `FileRepresentation`，失败再退回复制 `Data` 落临时文件。
+
+另外上传失败不再静默：`uploadPendingImages` 会计数超限/失败，写进 `errorText`，
+在「店铺数据同步」页显示；导入视频时若单段超 200MB 也会立刻提示。
+
+## 十一、拍照为什么「点了没反应」（1.6.3 修）
+
+`openCamera()` 以前只看 `isSourceTypeAvailable(.camera)` 就直接弹相机。
+用户只要之前点过一次「不允许」，之后每次点拍照都毫无反应——系统不会再弹权限框。
+现在先查 `AVCaptureDevice.authorizationStatus(for: .video)`：
+未决定就 `requestAccess`，已拒绝就弹「去设置里打开」并直接跳到 App 设置页。
+另外相机从 `.sheet` 换成 `.fullScreenCover`，并补上照片写入失败时的提示（以前也是静默的）。
