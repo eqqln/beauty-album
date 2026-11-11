@@ -34,20 +34,40 @@ function tenant_is_scoped_key(string $k): bool
     return isset($keys[$k]);
 }
 
+/** 板块行缓存（按引用取，方便改完失效） */
+function &tenant_cache(): array
+{
+    static $c = [];
+    return $c;
+}
+
 /** 板块行（带缓存） */
 function tenant_row(int $id): ?array
 {
-    static $cache = [];
-    if (array_key_exists($id, $cache)) return $cache[$id];
+    $c = &tenant_cache();
+    if (array_key_exists($id, $c)) return $c[$id];
     try {
         $st = db()->prepare('SELECT * FROM tenants WHERE id=?');
         $st->execute([$id]);
         $r = $st->fetch();
-        $cache[$id] = $r ?: null;
+        $c[$id] = $r ?: null;
     } catch (Throwable $e) {
-        $cache[$id] = null;
+        $c[$id] = null;
     }
-    return $cache[$id];
+    return $c[$id];
+}
+
+/**
+ * 让板块缓存失效。
+ *
+ * tenant_row 在同一个请求里只查一次库，改完 tenants 行必须调这个，
+ * 否则紧接着读回来还是改之前的值（数据库已经对了，返回给前端的却是旧的）。
+ */
+function tenant_forget(?int $id = null): void
+{
+    $c = &tenant_cache();
+    if ($id === null) $c = [];
+    else unset($c[$id]);
 }
 
 /**
@@ -260,6 +280,7 @@ function tenant_sync_device_count(int $tenantId): void
         $st->execute([$tenantId]);
         $n = (int)$st->fetchColumn();
         db()->prepare('UPDATE tenants SET device_count=? WHERE id=?')->execute([$n, $tenantId]);
+        tenant_forget($tenantId);
     } catch (Throwable $e) {
     }
 }
@@ -270,6 +291,7 @@ function tenant_touch(int $tenantId): void
     if ($tenantId < 0) return;
     try {
         db()->prepare('UPDATE tenants SET last_active_at=? WHERE id=?')->execute([now(), $tenantId]);
+        tenant_forget($tenantId);
     } catch (Throwable $e) {
     }
 }

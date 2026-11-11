@@ -87,16 +87,18 @@ def main():
     code_raw = r["data"]["rows"][0]["code_raw"]
     print("  激活码：%s" % code)
 
-    print("\n=== 4. 缺姓名/手机号时应被拒绝 ===")
+    print("\n=== 4. 缺姓名/手机号时应被拒绝（1.6.0 客户端） ===")
     dev = "TESTDEV-" + uuid.uuid4().hex[:10].upper()
-    r = call("license/redeem", {"code": code_raw, "device_id": dev, "device_name": "测试机"})
+    r = call("license/redeem", {"code": code_raw, "device_id": dev, "device_name": "测试机",
+                                "app_version": "1.6.0"})
     check("无姓名被拒", r.get("ok") is False and "姓名" in str(r.get("msg")), r.get("msg"))
 
-    r = call("license/redeem", {"code": code_raw, "device_id": dev, "device_name": "测试机", "name": name})
+    r = call("license/redeem", {"code": code_raw, "device_id": dev, "device_name": "测试机",
+                                "app_version": "1.6.0", "name": name})
     check("无手机号被拒", r.get("ok") is False and "手机" in str(r.get("msg")), r.get("msg"))
 
     r = call("license/redeem", {"code": code_raw, "device_id": dev, "device_name": "测试机",
-                                "name": name, "phone": "12345"})
+                                "app_version": "1.6.0", "name": name, "phone": "12345"})
     check("手机号格式错被拒", r.get("ok") is False, r.get("msg"))
 
     print("\n=== 5. 带姓名+手机号激活 → 自动开板块 ===")
@@ -218,6 +220,29 @@ def main():
     d = r.get("data") or {}
     check("加密时 api_base 是密文", not str(d.get("api_base", "")).startswith("http"), d.get("api_base"))
 
+    print("\n=== 13.5 旧版客户端（1.5.1）兼容 ===")
+    r = call("admin/license-generate", {"count": 2, "duration_value": 1, "duration_unit": "年",
+                                        "kind": "正式码", "note": "旧客户端兼容测试"}, tok)
+    codes = [x["code_raw"] for x in r["data"]["rows"]] if r.get("ok") else []
+    old_tid = 0
+    olddev = "OLD151-" + uuid.uuid4().hex[:8].upper()
+    if len(codes) == 2:
+        r = call("license/redeem", {"code": codes[0], "device_id": olddev,
+                                    "device_name": "旧版机", "app_version": "1.5.1"})
+        check("1.5.1 仍能激活", r.get("ok") is True, r.get("msg"))
+        old_tid = int((r.get("data") or {}).get("tenant_id") or 0)
+        old_name = str(((r.get("data") or {}).get("tenant") or {}).get("name") or "")
+        check("老客户端单独开板（不进默认板块）", old_tid > 0, old_tid)
+        check("板名标了待补信息", "待补" in old_name, old_name)
+
+        r = call("license/redeem", {"code": codes[1], "device_id": olddev,
+                                    "device_name": "旧版机", "app_version": "1.6.0",
+                                    "name": "升级用户", "phone": "13700137000"})
+        d = r.get("data") or {}
+        check("升级后复用原来那块板", int(d.get("tenant_id") or 0) == old_tid, d.get("tenant_id"))
+        check("升级后补上姓名电话", d.get("owner_name") == "升级用户" and d.get("owner_phone") == "13700137000",
+              "%s / %s" % (d.get("owner_name"), d.get("owner_phone")))
+
     print("\n=== 14. 清理测试数据 ===")
     # 解绑测试设备
     for item in cleanup:
@@ -236,6 +261,15 @@ def main():
     # 删板块
     r = call("admin/tenant-delete", {"id": new_tid}, tok)
     check("测试板块已删除", r.get("ok") is True, r.get("msg"))
+
+    # 旧客户端那块板
+    if old_tid > 0:
+        r = call("admin/license-devices", {"kw": olddev}, tok)
+        for row in (r.get("data") or {}).get("rows", []):
+            if row.get("device_id") == olddev:
+                call("admin/license-device-void", {"id": row["id"]}, tok)
+        r = call("admin/tenant-delete", {"id": old_tid}, tok)
+        check("旧客户端测试板块已删除", r.get("ok") is True, r.get("msg"))
 
     print("\n" + "=" * 46)
     print("  通过 %d 项，失败 %d 项" % (ok_count, fail_count))

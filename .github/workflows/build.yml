@@ -4,8 +4,12 @@ on:
   workflow_dispatch:
   push:
     branches: [main, master]
+    # 只改文档 / 服务端 / 工具时不用重新打 IPA，省一次 macOS 构建
     paths-ignore:
       - "**.md"
+      - "server/**"
+      - "tools/**"
+      - "docs/**"
 
 permissions:
   contents: write

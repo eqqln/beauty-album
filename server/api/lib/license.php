@@ -334,6 +334,18 @@ function license_redeem(array $in): array
         /* ---------- 板块归属 ----------
            一张码只属于一个人。第一次兑换时用姓名电话开板块，
            之后同一张码再激活（换手机 / 重装）必须还是这个人。 */
+
+        /* 这台设备以前激活过哪块板？1.5.1 及更早的客户端没有姓名/电话输入框，
+           它们当时自动开的是"待补信息"板；升级到 1.6.0 后重新激活，
+           要能认回原来那块，不然客户资料就留在旧板里找不回来了。 */
+        $devTenantId = 0;
+        try {
+            $st = $db->prepare('SELECT tenant_id FROM activations WHERE device_id=? AND tenant_id>0 ORDER BY id DESC LIMIT 1');
+            $st->execute([$deviceId]);
+            $devTenantId = (int)$st->fetchColumn();
+        } catch (Throwable $e) {
+        }
+
         $tenant = null;
         if (!empty($c['tenant_id'])) {
             $tenant = tenant_row((int)$c['tenant_id']);
@@ -345,15 +357,46 @@ function license_redeem(array $in): array
             if ($userPhone !== '' && $boundPhone !== '' && $userPhone !== $boundPhone) {
                 throw new RuntimeException('这张激活码已归属「' . $tenant['name'] . '」，请使用你自己的激活码');
             }
+        } elseif ($devTenantId > 0 && ($t = tenant_row($devTenantId)) && ($t['status'] ?? '正常') === '正常') {
+            /* 老设备升级上来：沿用原来那块板，这次带了姓名电话就补进去 */
+            $tenant = $t;
+            if ($userName !== '' && $userPhone !== '' && phone_ok($userPhone)) {
+                $newShop = (string)($t['phone'] ?? '') === '' ? $userName : (string)($t['shop_name'] ?? '');
+                $db->prepare('UPDATE tenants SET name=?, phone=?, shop_name=? WHERE id=?')
+                   ->execute([$userName, $userPhone, $newShop, $devTenantId]);
+                tenant_setting_set($devTenantId, 'shop_name', $newShop);
+                tenant_forget($devTenantId);
+                $tenant = tenant_row($devTenantId) ?: $tenant;
+                license_log('补资料', (int)$c['id'], $codeRaw, null, $deviceId, 0, 0,
+                            '老设备升级补姓名电话：' . $userName . ' / ' . $userPhone, 'App');
+            }
+            $db->prepare('UPDATE activation_codes SET tenant_id=? WHERE id=?')
+               ->execute([$devTenantId, (int)$c['id']]);
+            $c['tenant_id'] = $devTenantId;
         } else {
-            if ($userName === '') throw new RuntimeException('请填写使用人姓名');
-            if (!phone_ok($userPhone)) throw new RuntimeException('请填写正确的手机号');
-            $tenant = tenant_ensure($userName, $userPhone, $codeRaw);
+            /* 只有"明确是旧版本"才走兼容：1.5.1 及以前界面上没有姓名/电话输入框，
+               直接拒会让还没升级的店彻底激活不了。版本号缺失或 >= 1.6.0 一律按新规则严格校验。 */
+            $legacy = $appVersion !== '' && version_compare($appVersion, '1.6.0', '<');
+            if (!$legacy) {
+                /* 按手机号认人，同一个人换码续费不会丢数据 */
+                if ($userName === '') throw new RuntimeException('请填写使用人姓名');
+                if (!phone_ok($userPhone)) throw new RuntimeException('请填写正确的手机号');
+                $tenant = tenant_ensure($userName, $userPhone, $codeRaw);
+            } else {
+                /* 老客户端：单独开一块"待补信息"板，数据照样和别人隔离。
+                   等它升级到 1.6.0 再用同一台设备激活，会认回这块并补上姓名电话。 */
+                $tenant = tenant_ensure('待补信息 ' . substr($deviceId, -4), '', $codeRaw, '我的相册');
+                try {
+                    $db->prepare('UPDATE tenants SET note=? WHERE id=?')
+                       ->execute(['旧版本客户端激活自动创建，设备 ' . $deviceId, (int)$tenant['id']]);
+                } catch (Throwable $e) {
+                }
+            }
             $db->prepare('UPDATE activation_codes SET tenant_id=? WHERE id=?')
                ->execute([(int)$tenant['id'], (int)$c['id']]);
             $c['tenant_id'] = (int)$tenant['id'];
             license_log('开板块', (int)$c['id'], $codeRaw, null, $deviceId, 0, 0,
-                        $userName . ' / ' . $userPhone, 'App');
+                        $userName !== '' ? ($userName . ' / ' . $userPhone) : ('旧客户端 · 设备 ' . $deviceId), 'App');
         }
         $tenantId = (int)$tenant['id'];
 

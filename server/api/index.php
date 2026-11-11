@@ -1477,6 +1477,7 @@ try {
             if (!$sets) fail('没有需要修改的内容');
             $args[] = $id;
             db()->prepare('UPDATE tenants SET ' . implode(',', $sets) . ' WHERE id=?')->execute($args);
+            tenant_forget($id);
             ok(tenant_out(tenant_row($id) ?: $t), '已保存');
         }
 
@@ -1489,6 +1490,7 @@ try {
             if (!$t) fail('板块不存在');
             db()->prepare('UPDATE tenants SET restore_flag=1, restore_at=? WHERE id=?')
                ->execute([now(), $id]);
+            tenant_forget($id);
             license_log('要求恢复', null, (string)($t['code'] ?? ''), null, null, 0, 0,
                         '板块 #' . $id . ' ' . $t['name'], (string)($me['name'] ?: $me['email']));
             ok(null, '已标记：该板块下次激活/复核时会自动全量恢复到手机');
@@ -1499,6 +1501,7 @@ try {
             perm_check_cap(admin_required(), 'license');
             $id = inp_int('id');
             db()->prepare('UPDATE tenants SET restore_flag=0 WHERE id=?')->execute([$id]);
+            tenant_forget($id);
             ok(null, '已取消');
         }
 
@@ -1542,6 +1545,7 @@ try {
             if ($tid > 0) {
                 db()->prepare('UPDATE tenants SET restore_flag=0, restored_at=? WHERE id=?')
                    ->execute([now(), $tid]);
+                tenant_forget($tid);
             }
             ok(['tenant_id' => $tid], '已记录');
         }
