@@ -60,7 +60,12 @@ struct RootView: View {
         }
         .onChange(of: license.state) { s in
             if s == .active {
-                Task { await SyncService.shared.activate(store: store) }
+                /* 刚激活完也要检查一次：redeem 里 restoreNeeded 先于 state 赋值，
+                   只靠 onChange(restoreNeeded) 会漏掉「这次激活就要求恢复」的情况 */
+                Task {
+                    await SyncService.shared.activate(store: store)
+                    if license.restoreNeeded { showRestorePrompt = true }
+                }
             }
         }
         .onChange(of: license.restoreNeeded) { need in

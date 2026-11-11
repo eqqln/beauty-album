@@ -2169,7 +2169,7 @@
         '<div class="tenant-nums">' + nums + '</div>' +
         '<div class="tenant-acts">' +
           (on
-            ? '<button class="btn ghost sm" data-act="leave">回到默认板块</button>'
+            ? (t.id === 0 ? '' : '<button class="btn ghost sm" data-act="leave">回到默认板块</button>')
             : '<button class="btn primary sm" data-act="enter">进入这个板块</button>') +
           '<button class="btn ghost sm" data-act="restore">恢复到手机</button>' +
           '<button class="btn ghost sm" data-act="edit">编辑</button>' +

@@ -24,6 +24,7 @@ struct SettingsView: View {
                 securitySection
                 paymentSection
                 templateSection
+                serverSection
                 dataSection
                 aboutSection
             }
@@ -438,6 +439,8 @@ struct SettingsView: View {
 
     // MARK: 服务器
 
+    /// 只读展示：门店看到的是后台下发的显示形态（加密或明文），改地址走「我的 → 服务器」那张带确认的弹窗，
+    /// 不在设置页给一个随手能改坏的输入框
     private var serverSection: some View {
         Section {
             HStack {
@@ -445,18 +448,11 @@ struct SettingsView: View {
                 Spacer()
                 Text(ServerURL.display(CloudAPI.shared.baseURL)
                         .replacingOccurrences(of: "https://", with: ""))
-                    .font(.system(size: 12))
+                    .font(.system(size: 12, design: ServerURL.isEncrypted ? .monospaced : .default))
                     .foregroundColor(Theme.muted)
                     .lineLimit(1)
+                    .truncationMode(.middle)
             }
-            TextField("https://你的域名", text: Binding(
-                get: { CloudAPI.shared.baseURL },
-                set: { CloudAPI.shared.baseURL = $0 }
-            ))
-            .font(.system(size: 13))
-            .textInputAutocapitalization(.never)
-            .autocorrectionDisabled()
-            .keyboardType(.URL)
 
             HStack {
                 Label("登录状态", systemImage: "person.badge.key")
@@ -469,7 +465,7 @@ struct SettingsView: View {
         } header: {
             Text("服务器与账号")
         } footer: {
-            Text("会员注册、登录和套餐数据保存在这个地址对应的后台。在「我的」标签页里可以注册或登录。")
+            Text(ServerURL.modeHint + "。会员注册、登录和套餐数据保存在这个地址对应的后台，在「我的」标签页可以注册或登录。")
         }
     }
 
