@@ -7,7 +7,7 @@
   var state = { admin: null, settings: {} };
 
   /* 与 index.html 里 ?v= 保持一致，用于检测浏览器缓存了旧脚本 */
-  var BUILD = '20261112b';
+  var BUILD = '20261112c';
 
   var NAV = [
     { group: '总览' },
@@ -442,6 +442,8 @@
     if (nav.key === 'staff') return renderStaff(view);
     if (nav.key === 'tenants') return renderTenants(view);
     if (nav.key === 'license') return renderLicense(view);
+    /* 对比图不是独立数据，是照片配对出来的，走自己的渲染 */
+    if (nav.key === 'm:compares') return renderCompares(view);
     if (nav.key.indexOf('m:') === 0) return CRUD.render(view, nav.key.slice(2));
   }
 
@@ -2288,6 +2290,73 @@
     if (caps.backup) out.push('<span class="badge info">备份</span>');
     if (caps.sms) out.push('<span class="badge info">短信</span>');
     return out.join(' ');
+  }
+
+  /* ---------------- 对比图 ---------------- */
+
+  /**
+   * 对比图在 App 里不是一张独立的表：它就是同一个客户的
+   * 「使用前」照片和「使用后」照片各按时间倒序一一配对。
+   * 后台以前去读 compares 表，App 从来不写那张表，所以永远是空的。
+   * 现在由服务端按同样的规则从照片现算，手机上有几组这里就有几组。
+   */
+  async function renderCompares(view) {
+    var data = null;
+
+    async function load() {
+      try {
+        data = await API.get('admin/compare-pairs');
+      } catch (e) {
+        view.innerHTML = UI.empty(e.message, '⚠️');
+        return;
+      }
+      paint();
+    }
+
+    function pair(p) {
+      var b = p.before_url
+        ? '<a href="' + UI.esc(p.before_url) + '" target="_blank"><img class="cmp-img" src="' + UI.esc(p.before_url) + '" loading="lazy" alt=""></a>'
+        : '<div class="cmp-img cmp-miss">缺使用前照片</div>';
+      var a = p.after_url
+        ? '<a href="' + UI.esc(p.after_url) + '" target="_blank"><img class="cmp-img" src="' + UI.esc(p.after_url) + '" loading="lazy" alt=""></a>'
+        : '<div class="cmp-img cmp-miss">缺使用后照片</div>';
+      return '<div class="cmp-card">' +
+        '<div class="cmp-head">' +
+          '<div class="cmp-who">' + UI.esc(p.client_name || '未命名客户') +
+            '<span class="cmp-idx">第 ' + p.index + ' 组</span></div>' +
+          '<div class="cmp-time">' + UI.fmtDate(p.after_time || p.before_time) + '</div>' +
+        '</div>' +
+        '<div class="cmp-body">' +
+          '<div class="cmp-side"><div class="cmp-tag">使用前</div>' + b + '</div>' +
+          '<div class="cmp-side"><div class="cmp-tag after">使用后</div>' + a + '</div>' +
+        '</div>' +
+      '</div>';
+    }
+
+    function paint() {
+      var rows = (data && data.rows) || [];
+      var byClient = {};
+      rows.forEach(function (p) {
+        var k = p.client_name || '未命名客户';
+        byClient[k] = (byClient[k] || 0) + 1;
+      });
+      var people = Object.keys(byClient).length;
+
+      view.innerHTML =
+        '<div class="card" style="margin-bottom:16px">' +
+          '<div class="rc-head">' +
+            '<strong>对比图</strong>' +
+            '<span class="td-sub">这里不用手工建。手机里同一个客户的「使用前」和「使用后」照片会按时间一一配对，手机上有几组，这里就有几组</span>' +
+          '</div>' +
+          '<p class="td-sub" style="margin-top:10px">共 ' + rows.length + ' 组 · 涉及 ' + people + ' 位客户。' +
+            '点图片可以看原图。要新增对比图，去手机相册里给这个客户添加「使用后」照片即可。</p>' +
+        '</div>' +
+        (rows.length
+          ? '<div class="cmp-grid">' + rows.map(pair).join('') + '</div>'
+          : UI.empty('还没有对比图。给客户加「使用前」和「使用后」照片，这里会自动出现', '🔀'));
+    }
+
+    load();
   }
 
   /* ---------------- 板块管理 ---------------- */

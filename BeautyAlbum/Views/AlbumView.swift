@@ -32,6 +32,7 @@ struct AlbumView: View {
     @State private var videoPickerItems: [PhotosPickerItem] = []
     @State private var showCamera = false
     @State private var capturedImage: UIImage?
+    @State private var cameraDenied = false
     @State private var importing = false
     @State private var viewingID: UUID?
     @State private var playingVideo: PhotoItem?
@@ -88,12 +89,25 @@ struct AlbumView: View {
                 client.photos.append(PhotoItem(fileName: name, phase: targetPhase))
                 store.save()
                 showToast("已添加 1 张\(store.settings.label(for: targetPhase))照片")
+            } else {
+                /* 以前这里失败是静默的，用户只看到「拍了没反应」 */
+                showToast(store.lastError ?? "照片保存失败，检查一下手机存储空间")
             }
             capturedImage = nil
         }
-        .sheet(isPresented: $showCamera) {
+        .fullScreenCover(isPresented: $showCamera) {
             CameraPicker(image: $capturedImage)
                 .ignoresSafeArea()
+        }
+        .alert("相机没有权限", isPresented: $cameraDenied) {
+            Button("去设置里打开") {
+                if let url = URL(string: UIApplication.openSettingsURLString) {
+                    UIApplication.shared.open(url)
+                }
+            }
+            Button("知道了", role: .cancel) {}
+        } message: {
+            Text("拍照需要相机权限。打开「设置 → 美颜相册 → 相机」允许后，再回来点拍照。")
         }
         .fullScreenCover(isPresented: Binding(
             get: { viewingID != nil },
@@ -180,11 +194,7 @@ struct AlbumView: View {
             }
 
             Button {
-                if UIImagePickerController.isSourceTypeAvailable(.camera) {
-                    showCamera = true
-                } else {
-                    showToast("当前设备没有可用相机")
-                }
+                openCamera()
             } label: {
                 HStack(spacing: 5) {
                     Image(systemName: "camera").font(.system(size: 12, weight: .medium))
@@ -364,10 +374,33 @@ struct AlbumView: View {
         let phase = targetPhase
         Task {
             var added = 0
+            var failMsg: String?
             for item in items {
-                guard let picked = try? await item.loadTransferable(type: PickedVideo.self) else { continue }
-                defer { try? FileManager.default.removeItem(at: picked.url) }
-                guard var photo = store.importVideo(from: picked.url, clientID: clientID) else { continue }
+                /* 优先走 FileRepresentation 直接拿文件，拿不到再退回复制 Data，
+                   有些视频（尤其是 iCloud 里的、HEVC 的）第一种方式会直接返回 nil */
+                var src: URL?
+                var tmp: URL?
+                if let picked = try? await item.loadTransferable(type: PickedVideo.self) {
+                    src = picked.url
+                    tmp = picked.url
+                } else if let data = try? await item.loadTransferable(type: Data.self), !data.isEmpty {
+                    let t = FileManager.default.temporaryDirectory
+                        .appendingPathComponent(UUID().uuidString + ".mp4")
+                    if (try? data.write(to: t)) != nil {
+                        src = t
+                        tmp = t
+                    }
+                }
+                guard let srcURL = src else {
+                    failMsg = "这段视频读不出来，可能还在 iCloud 里没下载完，先在相册里打开播一下再试"
+                    continue
+                }
+                defer { if let t = tmp { try? FileManager.default.removeItem(at: t) } }
+
+                guard var photo = await store.importVideo(from: srcURL, clientID: clientID) else {
+                    failMsg = store.lastError
+                    continue
+                }
                 photo.phase = phase
                 await MainActor.run {
                     client.photos.append(photo)
@@ -381,9 +414,31 @@ struct AlbumView: View {
                 if added > 0 {
                     showToast("已添加 \(added) 段\(store.settings.label(for: phase))视频")
                 } else {
-                    showToast("视频导入失败，换一段再试")
+                    showToast(failMsg ?? "视频导入失败，换一段再试")
                 }
             }
+        }
+    }
+
+    /// 打开相机：先查权限。
+    /// 以前不管权限直接 showCamera，用户之前点过一次「不允许」之后，
+    /// 再点拍照就什么都不发生，看起来就是「拍照没用」。
+    private func openCamera() {
+        guard UIImagePickerController.isSourceTypeAvailable(.camera) else {
+            showToast("当前设备没有可用相机")
+            return
+        }
+        switch AVCaptureDevice.authorizationStatus(for: .video) {
+        case .authorized:
+            showCamera = true
+        case .notDetermined:
+            AVCaptureDevice.requestAccess(for: .video) { granted in
+                DispatchQueue.main.async {
+                    if granted { showCamera = true } else { cameraDenied = true }
+                }
+            }
+        default:
+            cameraDenied = true
         }
     }
 

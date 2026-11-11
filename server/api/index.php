@@ -1666,6 +1666,17 @@ try {
             ok(['rows' => tenant_export_list($id)]);
         }
 
+        /**
+         * 对比图列表。
+         * App 里对比图不是一张独立的表，而是「使用前」和「使用后」照片按时间倒序
+         * 一一配对出来的。所以这里也现算，不再读 compares 表（那张表永远是空的）。
+         */
+        case 'admin/compare-pairs': {
+            admin_required();
+            $rows = compare_pairs();
+            ok(['rows' => $rows, 'total' => count($rows)]);
+        }
+
         /** App 恢复完成后回报，清掉标志 */
         case 'license/restore-ack': {
             sync_authorize();

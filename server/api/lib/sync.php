@@ -571,6 +571,82 @@ function sync_stats(): array
             $out[$name] = 0;
         }
     }
+    /* 对比图没有独立的表，条数得从照片配对算出来，否则永远是 0 */
+    try {
+        $out['compares'] = count(compare_pairs($tid));
+    } catch (Throwable $e) {
+        $out['compares'] = 0;
+    }
+    return $out;
+}
+
+/**
+ * 对比图配对：完全照 App 的规则来。
+ *
+ * App 里没有「对比图」这张表，CompareView 是拿同一个客户的
+ * beforePhotos / afterPhotos 各按时间倒序，按下标一一配对，
+ * 组数取两边数量的较大值，短的那边用最后一张兜底。
+ *
+ * 后台以前读 compares 表，而 App 从来不写这张表，所以后台对比图
+ * 永远是空的，看起来像"没同步"。这里直接按同样的规则从 photos 现算，
+ * 手机上有几组，后台就有几组。
+ */
+function compare_pairs(int $tid = -1): array
+{
+    if ($tid < 0) $tid = tenant_current_id();
+
+    $st = db()->prepare(
+        "SELECT uid, client_uid, phase, url, thumb_url, kind, created_at
+           FROM photos
+          WHERE tenant_id=?
+          ORDER BY created_at DESC, id DESC"
+    );
+    $st->execute([$tid]);
+
+    $byClient = [];
+    foreach ($st->fetchAll() as $r) {
+        $cid = (string)$r['client_uid'];
+        if ($cid === '') continue;
+        /* 视频不参与对比：手机端 beforePhotos/afterPhotos 是全部照片，
+           但视频没有可比性，后台这里只取图片 */
+        if ((string)($r['kind'] ?? 'image') === 'video') continue;
+        $isBefore = strpos((string)$r['phase'], '前') !== false;
+        $byClient[$cid][$isBefore ? 'before' : 'after'][] = $r;
+    }
+    if (!$byClient) return [];
+
+    $names = [];
+    try {
+        $cs = db()->prepare('SELECT uid, name FROM customers WHERE tenant_id=?');
+        $cs->execute([$tid]);
+        foreach ($cs->fetchAll() as $c) $names[(string)$c['uid']] = (string)$c['name'];
+    } catch (Throwable $e) { /* 没客户表也能出图 */ }
+
+    $out = [];
+    foreach ($byClient as $cid => $g) {
+        $b = isset($g['before']) ? $g['before'] : [];
+        $a = isset($g['after']) ? $g['after'] : [];
+        $n = max(count($b), count($a));
+        for ($i = 0; $i < $n; $i++) {
+            $bp = $b ? $b[min($i, count($b) - 1)] : null;
+            $ap = $a ? $a[min($i, count($a) - 1)] : null;
+            $out[] = [
+                'uid'         => (string)($bp['uid'] ?? '') . '_' . (string)($ap['uid'] ?? ''),
+                'index'       => $i + 1,
+                'client_uid'  => (string)$cid,
+                'client_name' => isset($names[$cid]) ? $names[$cid] : '',
+                'before_uid'  => (string)($bp['uid'] ?? ''),
+                'after_uid'   => (string)($ap['uid'] ?? ''),
+                'before_url'  => (string)($bp['url'] ?? ''),
+                'after_url'   => (string)($ap['url'] ?? ''),
+                'before_time' => (string)($bp['created_at'] ?? ''),
+                'after_time'  => (string)($ap['created_at'] ?? ''),
+            ];
+        }
+    }
+    usort($out, function ($x, $y) {
+        return strcmp(max($y['before_time'], $y['after_time']), max($x['before_time'], $x['after_time']));
+    });
     return $out;
 }
 

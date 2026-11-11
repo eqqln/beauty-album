@@ -257,7 +257,12 @@ final class Store: ObservableObject {
 
     /// 导入一段视频：复制到客户目录 + 抽一帧当封面 + 读时长
     /// 返回 nil 表示失败，原因写在 lastError
-    func importVideo(from src: URL, clientID: UUID) -> PhotoItem? {
+    ///
+    /// 注意：必须用 async 的 load(.duration) / image(at:)，不能再用
+    /// asset.duration 和 copyCGImage(at:)。iOS 16 起那两个同步 API 对
+    /// 刚拷进来的文件经常拿不到值：时长变 0、抽帧抛错，结果视频进了列表
+    /// 但封面是黑的、时长显示 0:00，看起来就像"视频没用"。
+    func importVideo(from src: URL, clientID: UUID) async -> PhotoItem? {
         let id = UUID()
         let videoName = id.uuidString + ".mp4"
         let thumbName = id.uuidString + ".jpg"
@@ -272,16 +277,21 @@ final class Store: ObservableObject {
             try FileManager.default.copyItem(at: src, to: dst)
 
             let asset = AVURLAsset(url: dst)
-            let seconds = CMTimeGetSeconds(asset.duration)
-            let duration = seconds.isFinite && seconds > 0 ? seconds : 0
 
-            /* 抽第 1 秒的帧当封面；视频太短就抽 0 秒 */
+            /* 时长：异步读，读不到就按 0 处理，不阻塞封面 */
+            var duration: Double = 0
+            if let d = try? await asset.load(.duration) {
+                let seconds = CMTimeGetSeconds(d)
+                if seconds.isFinite && seconds > 0 { duration = seconds }
+            }
+
+            /* 抽第 1 秒（或总长的 1/3）的帧当封面 */
             let gen = AVAssetImageGenerator(asset: asset)
             gen.appliesPreferredTrackTransform = true
             gen.maximumSize = CGSize(width: 900, height: 900)
             let at = CMTime(seconds: min(1.0, max(0, duration / 3)), preferredTimescale: 600)
-            if let cg = try? gen.copyCGImage(at: at, actualTime: nil) {
-                let img = UIImage(cgImage: cg)
+            if let shot = try? await gen.image(at: at) {
+                let img = UIImage(cgImage: shot.image)
                 if let data = img.jpegData(compressionQuality: 0.85) {
                     try? data.write(to: dir.appendingPathComponent(thumbName), options: .atomic)
                 }
