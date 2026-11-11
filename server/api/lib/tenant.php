@@ -192,7 +192,9 @@ function tenant_copy_defaults(int $tenantId): void
 {
     $keys = ['shop_slogan', 'before_label', 'after_label', 'home_layout',
              'home_columns', 'home_limit', 'show_cover', 'step_template', 'app_features'];
-    $st = db()->prepare('SELECT k, v FROM settings WHERE k=?');
+    /* 只查 v 一列：以前写的是 SELECT k, v，fetchColumn() 拿的是第一列 k，
+       结果把键名当成值存进板块设置，App 里就显示成 before_label / after_label */
+    $st = db()->prepare('SELECT v FROM settings WHERE k=?');
     $ins = db()->prepare('INSERT INTO tenant_settings(tenant_id,k,v) VALUES(?,?,?) ON DUPLICATE KEY UPDATE v=VALUES(v)');
     foreach ($keys as $k) {
         $st->execute([$k]);

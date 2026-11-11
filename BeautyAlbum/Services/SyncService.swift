@@ -768,8 +768,8 @@ final class SyncService: ObservableObject {
             return [[
                 "uid": Self.shopUID,
                 "shop_name": store.settings.shopName,
-                "before_label": store.settings.beforeLabel,
-                "after_label": store.settings.afterLabel,
+                "before_label": store.settings.beforeLabelSafe,
+                "after_label": store.settings.afterLabelSafe,
                 "pay_link": store.settings.payLink,
                 "pay_note": store.settings.payNote,
                 "wechat_qr": store.settings.wechatQR == nil ? "" : (imageURLs["shop/wechat_qr"] ?? ""),
@@ -1230,11 +1230,15 @@ final class SyncService: ObservableObject {
             if let v = r["shop_name"] as? String, !v.isEmpty, v != st.shopName {
                 st.shopName = v; touched = true
             }
-            if let v = r["before_label"] as? String, !v.isEmpty, v != st.beforeLabel {
-                st.beforeLabel = v; touched = true
+            if let v = r["before_label"] as? String, !v.isEmpty,
+               AppSettings.cleanLabel(v, fallback: "") != "",
+               AppSettings.cleanLabel(v, fallback: "") != st.beforeLabel {
+                st.beforeLabel = AppSettings.cleanLabel(v, fallback: st.beforeLabel); touched = true
             }
-            if let v = r["after_label"] as? String, !v.isEmpty, v != st.afterLabel {
-                st.afterLabel = v; touched = true
+            if let v = r["after_label"] as? String, !v.isEmpty,
+               AppSettings.cleanLabel(v, fallback: "") != "",
+               AppSettings.cleanLabel(v, fallback: "") != st.afterLabel {
+                st.afterLabel = AppSettings.cleanLabel(v, fallback: st.afterLabel); touched = true
             }
             if let v = r["pay_link"] as? String, v != st.payLink {
                 st.payLink = v; touched = true

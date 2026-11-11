@@ -69,8 +69,8 @@ enum BackupService {
         try enc.encode(snap).write(to: root.appendingPathComponent("data.json"), options: .atomic)
 
         // 2. 按客户名 / 阶段文字 建立目录
-        let beforeDir = sanitize(settings.beforeLabel, fallback: "使用前")
-        let afterDir = sanitize(settings.afterLabel, fallback: "使用后")
+        let beforeDir = sanitize(settings.beforeLabelSafe, fallback: "使用前")
+        let afterDir = sanitize(settings.afterLabelSafe, fallback: "使用后")
         var usedNames = Set<String>()
         var photoCount = 0
 

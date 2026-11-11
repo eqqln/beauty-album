@@ -255,21 +255,21 @@ struct SegmentedTabs: View {
 
     var body: some View {
         ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 8) {
+            HStack(spacing: 5) {
                 ForEach(tabs) { t in
                     let active = t == selection
                     Button {
                         withAnimation(.easeOut(duration: 0.16)) { selection = t }
                     } label: {
-                        HStack(spacing: 5) {
+                        HStack(spacing: 4) {
                             Image(systemName: t.icon)
-                                .font(.system(size: 11, weight: .medium))
+                                .font(.system(size: 9, weight: .medium))
                             Text(t.rawValue)
-                                .font(.system(size: 13, weight: active ? .semibold : .regular))
+                                .font(.system(size: 11.5, weight: active ? .semibold : .regular))
                         }
                         .foregroundColor(active ? .white : Theme.inkSoft)
-                        .padding(.horizontal, 14)
-                        .padding(.vertical, 8)
+                        .padding(.horizontal, 9)
+                        .padding(.vertical, 7)
                         .background(
                             Group {
                                 if active {
@@ -287,7 +287,7 @@ struct SegmentedTabs: View {
                     .buttonStyle(.plain)
                 }
             }
-            .padding(.horizontal, 16)
+            .padding(.horizontal, 12)
         }
     }
 }

@@ -272,6 +272,29 @@
       cur = 0;
     }
 
+    /* 默认板块是空的、又只有一块真实板块时，自动切过去。
+       否则店一进后台看到的全是 0，会以为手机上的客户没同步上来。 */
+    if (cur === 0) {
+      var def = rows.find(function (t) { return t.id === 0; });
+      var others = rows.filter(function (t) { return t.id !== 0 && t.status === '正常'; });
+      var defEmpty = !def || !def.counts ||
+        (!def.counts.customers && !def.counts.photos && !def.counts.appointments && !def.counts.members);
+      if (defEmpty && others.length === 1) {
+        cur = others[0].id;
+        API.setTenant(cur);
+        try {
+          state.settings = await API.get('settings/get') || {};
+          if (state.settings.shop_name) {
+            $('sideShopName').textContent = state.settings.shop_name;
+            document.title = state.settings.shop_name + ' · 管理后台';
+          }
+        } catch (e) {}
+        if (window.UI && UI.toast) {
+          UI.toast('默认板块是空的，已切到「' + (others[0].shop_name || others[0].name) + '」', 'ok');
+        }
+      }
+    }
+
     sel.innerHTML = rows.map(function (t) {
       var label = (t.shop_name || t.name || ('板块 #' + t.id));
       if (t.id === 0) label = '默认板块';

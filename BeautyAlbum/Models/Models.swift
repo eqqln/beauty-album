@@ -766,9 +766,21 @@ enum ClientListLayout: String, Codable, CaseIterable, Identifiable {
 struct AppSettings: Codable {
     var shopName: String = "我的美容院"
     /// 可自定义的「使用前」文字
-    var beforeLabel: String = "使用前"
+    var beforeLabel: String = "使用前" {
+        didSet {
+            /* 任何来源（本地 JSON、云端同步、设置页）写进来的脏值都在这里挡住，
+               避免 before_label 这种键名被当成文字显示出去 */
+            let c = AppSettings.cleanLabel(beforeLabel, fallback: "使用前")
+            if c != beforeLabel { beforeLabel = c }
+        }
+    }
     /// 可自定义的「使用后」文字
-    var afterLabel: String = "使用后"
+    var afterLabel: String = "使用后" {
+        didSet {
+            let c = AppSettings.cleanLabel(afterLabel, fallback: "使用后")
+            if c != afterLabel { afterLabel = c }
+        }
+    }
     /// 微信收款码图片文件名
     var wechatQR: String? = nil
     /// 支付宝收款码图片文件名
@@ -815,8 +827,10 @@ struct AppSettings: Codable {
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         shopName = try c.decodeIfPresent(String.self, forKey: .shopName) ?? "我的美容院"
-        beforeLabel = try c.decodeIfPresent(String.self, forKey: .beforeLabel) ?? "使用前"
-        afterLabel = try c.decodeIfPresent(String.self, forKey: .afterLabel) ?? "使用后"
+        beforeLabel = AppSettings.cleanLabel(try c.decodeIfPresent(String.self, forKey: .beforeLabel) ?? "使用前",
+                                             fallback: "使用前")
+        afterLabel = AppSettings.cleanLabel(try c.decodeIfPresent(String.self, forKey: .afterLabel) ?? "使用后",
+                                            fallback: "使用后")
         wechatQR = try c.decodeIfPresent(String.self, forKey: .wechatQR)
         alipayQR = try c.decodeIfPresent(String.self, forKey: .alipayQR)
         payLink = try c.decodeIfPresent(String.self, forKey: .payLink) ?? ""
@@ -871,8 +885,22 @@ struct AppSettings: Codable {
         String(format: "%02d:%02d", autoBackupHour, autoBackupMinute)
     }
 
+    /// 兜底：设置项被误写成键名时用默认值。
+    /// 历史上板块设置曾把键名当值存（before_label = "before_label"），
+    /// 同步下来就会在相册筛选条上原样显示成英文，这里统一挡掉。
+    static func cleanLabel(_ raw: String, fallback: String) -> String {
+        let t = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        if t.isEmpty { return fallback }
+        let bad = ["before_label", "after_label", "shop_name", "shop_slogan",
+                   "step_template", "home_layout", "app_features", "show_cover"]
+        return bad.contains(t) ? fallback : t
+    }
+
+    var beforeLabelSafe: String { AppSettings.cleanLabel(beforeLabel, fallback: "使用前") }
+    var afterLabelSafe: String { AppSettings.cleanLabel(afterLabel, fallback: "使用后") }
+
     func label(for phase: PhotoPhase) -> String {
-        phase == .before ? beforeLabel : afterLabel
+        phase == .before ? beforeLabelSafe : afterLabelSafe
     }
 }
 

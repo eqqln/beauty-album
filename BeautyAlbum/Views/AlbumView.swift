@@ -16,8 +16,8 @@ enum PhaseFilter: String, CaseIterable, Identifiable {
     func title(_ s: AppSettings) -> String {
         switch self {
         case .all: return "全部"
-        case .before: return s.beforeLabel
-        case .after: return s.afterLabel
+        case .before: return s.beforeLabelSafe
+        case .after: return s.afterLabelSafe
         }
     }
 }
@@ -162,6 +162,7 @@ struct AlbumView: View {
     // MARK: 添加区
 
     private var hintBar: some View {
+        VStack(alignment: .leading, spacing: 8) {
         HStack(spacing: 8) {
             PhotosPicker(selection: $pickerItems,
                          maxSelectionCount: 40,
@@ -215,11 +216,17 @@ struct AlbumView: View {
 
             if importing {
                 ProgressView().scaleEffect(0.8)
-            } else {
-                Text("归入 \(store.settings.label(for: targetPhase))")
-                    .font(.system(size: 11))
-                    .foregroundColor(Theme.muted)
             }
+        }
+
+        /* 单独一行放「归入」，不然窄屏上会被三个按钮挤到边上折行 */
+        HStack(spacing: 4) {
+            Image(systemName: "arrow.turn.down.right")
+                .font(.system(size: 9, weight: .semibold))
+            Text("新照片会归到「\(store.settings.label(for: targetPhase))」")
+                .font(.system(size: 11))
+        }
+        .foregroundColor(Theme.muted)
         }
     }
 
@@ -307,7 +314,7 @@ struct AlbumView: View {
                 store.movePhoto(clientID: clientID,
                                 photoID: p.id,
                                 to: p.phase == .before ? .after : .before)
-                showToast("已移到\(p.phase == .before ? store.settings.afterLabel : store.settings.beforeLabel)")
+                showToast("已移到\(p.phase == .before ? store.settings.afterLabelSafe : store.settings.beforeLabelSafe)")
             } label: {
                 Label(p.phase == .before
                       ? "改为\(store.settings.afterLabel)"
